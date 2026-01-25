@@ -1,0 +1,606 @@
+import os
+from pathlib import Path
+from typing import List, Optional
+
+from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QIcon
+from PyQt6.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QListWidget, QListWidgetItem, QPushButton,
+    QProgressBar, QLineEdit, QFileDialog, QFrame,
+    QStatusBar, QMessageBox, QSizePolicy, QCheckBox,
+    QDoubleSpinBox, QMenu
+)
+
+from core.ffmpeg_worker import FFmpegWorker
+from utils.file_utils import (
+    is_video_file, get_video_files_from_folder,
+    format_duration, get_video_duration, check_ffmpeg_available
+)
+
+
+class DropZone(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("dropZone")
+        self.setAcceptDrops(True)
+        self.main_window = parent
+
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        icon_label = QLabel("🎬")
+        icon_label.setStyleSheet("font-size: 56px; background: transparent;")
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        text_label = QLabel("Перетащите видео или папки сюда")
+        text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        text_label.setStyleSheet("font-size: 16px; font-weight: bold; background: transparent; color: #ff6b6b;")
+
+        subtext_label = QLabel("или нажмите для выбора файлов")
+        subtext_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtext_label.setStyleSheet("background: transparent;")
+        subtext_label.setObjectName("subtitleLabel")
+
+        layout.addWidget(icon_label)
+        layout.addWidget(text_label)
+        layout.addWidget(subtext_label)
+
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, event):
+        if self.main_window:
+            self.main_window.add_files_dialog()
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            self.setObjectName("dropZoneActive")
+            self.style().unpolish(self)
+            self.style().polish(self)
+
+    def dragLeaveEvent(self, event):
+        self.setObjectName("dropZone")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def dropEvent(self, event: QDropEvent):
+        self.setObjectName("dropZone")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+        files = []
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if os.path.isfile(path) and is_video_file(path):
+                files.append(path)
+            elif os.path.isdir(path):
+                files.extend(get_video_files_from_folder(path))
+
+        if files and self.main_window:
+            self.main_window.add_files(files)
+
+        event.acceptProposedAction()
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.files: List[str] = []
+        self.output_folder: str = str(Path.home() / "Videos" / "Trimmed")
+        self.worker: Optional[FFmpegWorker] = None
+
+        self.init_ui()
+        self.check_ffmpeg()
+
+    def init_ui(self):
+        self.setWindowTitle("✂️ SilenceCutter")
+        self.setMinimumSize(1200, 1000)
+        self.resize(1200, 1000)
+
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
+
+        title_label = QLabel("✂️ SilenceCutter")
+        title_label.setObjectName("titleLabel")
+        title_label.setStyleSheet("background: transparent;")
+        layout.addWidget(title_label)
+
+        self.drop_zone = DropZone(self)
+        self.drop_zone.setMinimumHeight(140)
+        layout.addWidget(self.drop_zone)
+
+        btn_layout = QHBoxLayout()
+
+        self.add_files_btn = QPushButton("📄 Добавить файлы")
+        self.add_files_btn.clicked.connect(self.add_files_dialog)
+        btn_layout.addWidget(self.add_files_btn)
+
+        self.add_folder_btn = QPushButton("📁 Добавить папку")
+        self.add_folder_btn.clicked.connect(self.add_folder_dialog)
+        btn_layout.addWidget(self.add_folder_btn)
+
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+        files_label = QLabel("Файлы для обработки:")
+        layout.addWidget(files_label)
+
+        self.file_list = QListWidget()
+        self.file_list.setMinimumHeight(150)
+        self.file_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.file_list.customContextMenuRequested.connect(self.show_context_menu)
+        self.file_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.file_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self.file_list.model().rowsMoved.connect(self.on_rows_moved)
+        layout.addWidget(self.file_list, 1)
+
+        list_controls_layout = QHBoxLayout()
+        list_controls_layout.setSpacing(8)
+
+        self.move_up_btn = QPushButton("Вверх")
+        self.move_up_btn.setMinimumWidth(70)
+        self.move_up_btn.clicked.connect(self.move_item_up)
+        self.move_up_btn.setToolTip("Переместить вверх")
+        list_controls_layout.addWidget(self.move_up_btn)
+
+        self.move_down_btn = QPushButton("Вниз")
+        self.move_down_btn.setMinimumWidth(70)
+        self.move_down_btn.clicked.connect(self.move_item_down)
+        self.move_down_btn.setToolTip("Переместить вниз")
+        list_controls_layout.addWidget(self.move_down_btn)
+
+        list_controls_layout.addStretch()
+        layout.addLayout(list_controls_layout)
+
+        output_layout = QHBoxLayout()
+        output_layout.addWidget(QLabel("Папка назначения:"))
+
+        self.output_edit = QLineEdit(self.output_folder)
+        self.output_edit.setReadOnly(True)
+        output_layout.addWidget(self.output_edit, 1)
+
+        self.change_output_btn = QPushButton("Изменить")
+        self.change_output_btn.clicked.connect(self.change_output_folder)
+        output_layout.addWidget(self.change_output_btn)
+
+        self.open_folder_btn = QPushButton("📂 Открыть")
+        self.open_folder_btn.clicked.connect(self.open_output_folder)
+        self.open_folder_btn.setToolTip("Открыть папку назначения в проводнике")
+        output_layout.addWidget(self.open_folder_btn)
+
+        layout.addLayout(output_layout)
+
+        settings_layout = QHBoxLayout()
+        settings_layout.setSpacing(12)
+
+        noise_label = QLabel("Порог тишины:")
+        noise_label.setStyleSheet("background: transparent;")
+        settings_layout.addWidget(noise_label)
+
+        self.noise_spin = QDoubleSpinBox()
+        self.noise_spin.setRange(-60, -10)
+        self.noise_spin.setValue(-50)
+        self.noise_spin.setSuffix(" dB")
+        self.noise_spin.setSingleStep(5)
+        self.noise_spin.setFixedWidth(90)
+        self.noise_spin.setToolTip("Порог громкости для определения тишины\n-50 dB — только полная тишина (безопасно)\n-30 dB — агрессивнее, режет больше")
+        settings_layout.addWidget(self.noise_spin)
+
+        min_dur_label = QLabel("Мин. длительность:")
+        min_dur_label.setStyleSheet("background: transparent;")
+        settings_layout.addWidget(min_dur_label)
+
+        self.min_duration_spin = QDoubleSpinBox()
+        self.min_duration_spin.setRange(0.1, 5.0)
+        self.min_duration_spin.setValue(1.0)
+        self.min_duration_spin.setSuffix(" сек")
+        self.min_duration_spin.setSingleStep(0.1)
+        self.min_duration_spin.setFixedWidth(90)
+        self.min_duration_spin.setToolTip("Минимальная длительность тишины для обнаружения\nКороткие паузы < этого значения игнорируются")
+        settings_layout.addWidget(self.min_duration_spin)
+
+        self.remove_internal_cb = QCheckBox("Удалять паузы >=")
+        self.remove_internal_cb.setStyleSheet("background: transparent;")
+        self.remove_internal_cb.toggled.connect(self.on_internal_toggle)
+        settings_layout.addWidget(self.remove_internal_cb)
+
+        self.threshold_spin = QDoubleSpinBox()
+        self.threshold_spin.setRange(0.5, 30.0)
+        self.threshold_spin.setValue(2.0)
+        self.threshold_spin.setSuffix(" сек")
+        self.threshold_spin.setSingleStep(0.5)
+        self.threshold_spin.setEnabled(False)
+        self.threshold_spin.setFixedWidth(80)
+        self.threshold_spin.setToolTip("Паузы короче этого значения не вырезаются")
+        settings_layout.addWidget(self.threshold_spin)
+
+        self.merge_after_cb = QCheckBox("Склеить после")
+        self.merge_after_cb.setStyleSheet("background: transparent;")
+        self.merge_after_cb.setToolTip("После обрезки всех видео — склеить их в один файл")
+        settings_layout.addWidget(self.merge_after_cb)
+
+        settings_layout.addStretch()
+        layout.addLayout(settings_layout)
+
+        options_layout = QHBoxLayout()
+        options_layout.setSpacing(16)
+
+        self.precise_cut_cb = QCheckBox("Точная обрезка (перекодирование)")
+        self.precise_cut_cb.setStyleSheet("background: transparent;")
+        self.precise_cut_cb.setChecked(True)
+        self.precise_cut_cb.setToolTip("Включено: точные границы, но медленнее\nВыключено: быстро, но возможны глюки в начале")
+        options_layout.addWidget(self.precise_cut_cb)
+
+        options_layout.addStretch()
+
+        layout.addLayout(options_layout)
+
+        progress_layout = QVBoxLayout()
+        progress_layout.setSpacing(8)
+
+        self.total_progress_label = QLabel("Общий прогресс:")
+        progress_layout.addWidget(self.total_progress_label)
+
+        self.total_progress = QProgressBar()
+        self.total_progress.setValue(0)
+        progress_layout.addWidget(self.total_progress)
+
+        self.file_progress_label = QLabel("Текущий файл:")
+        progress_layout.addWidget(self.file_progress_label)
+
+        self.file_progress = QProgressBar()
+        self.file_progress.setObjectName("fileProgress")
+        self.file_progress.setValue(0)
+        progress_layout.addWidget(self.file_progress)
+
+        layout.addLayout(progress_layout)
+
+        action_layout = QHBoxLayout()
+
+        self.clear_btn = QPushButton("🗑️ Очистить")
+        self.clear_btn.clicked.connect(self.clear_files)
+        action_layout.addWidget(self.clear_btn)
+
+        action_layout.addStretch()
+
+        self.cancel_btn = QPushButton("❌ Отменить")
+        self.cancel_btn.setObjectName("dangerButton")
+        self.cancel_btn.clicked.connect(self.cancel_processing)
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.hide()
+        action_layout.addWidget(self.cancel_btn)
+
+        self.process_btn = QPushButton("▶️ Обработать все")
+        self.process_btn.setObjectName("primaryButton")
+        self.process_btn.clicked.connect(self.start_processing)
+        self.process_btn.setEnabled(False)
+        action_layout.addWidget(self.process_btn)
+
+        layout.addLayout(action_layout)
+
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("Готово. Добавьте видео для обработки.")
+
+    def check_ffmpeg(self):
+        available, message = check_ffmpeg_available()
+        if not available:
+            QMessageBox.critical(
+                self,
+                "FFMPEG не найден",
+                f"Для работы приложения требуется FFMPEG.\n\n{message}\n\n"
+                "Установите FFMPEG и добавьте его в PATH."
+            )
+
+    def add_files_dialog(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Выберите видео файлы",
+            "",
+            "Видео файлы (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.mpeg *.mpg);;Все файлы (*.*)"
+        )
+        if files:
+            self.add_files(files)
+
+    def add_folder_dialog(self):
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Выберите папку с видео"
+        )
+        if folder:
+            files = get_video_files_from_folder(folder)
+            if files:
+                self.add_files(files)
+            else:
+                QMessageBox.information(
+                    self,
+                    "Нет видео",
+                    "В выбранной папке не найдено видео файлов."
+                )
+
+    def add_files(self, files: List[str]):
+        added = 0
+        for file_path in files:
+            if file_path not in self.files:
+                self.files.append(file_path)
+                self.add_file_to_list(file_path)
+                added += 1
+
+        self.update_ui_state()
+        if added > 0:
+            self.status_bar.showMessage(f"Добавлено файлов: {added}. Всего: {len(self.files)}")
+
+    def add_file_to_list(self, file_path: str):
+        filename = Path(file_path).name
+        duration = get_video_duration(file_path)
+        duration_str = format_duration(duration)
+
+        item = QListWidgetItem(f"○  {filename}    [{duration_str}]")
+        item.setData(Qt.ItemDataRole.UserRole, file_path)
+        item.setToolTip(file_path)
+        self.file_list.addItem(item)
+
+    def change_output_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Выберите папку для сохранения",
+            self.output_folder
+        )
+        if folder:
+            self.output_folder = folder
+            self.output_edit.setText(folder)
+
+    def open_output_folder(self):
+        os.makedirs(self.output_folder, exist_ok=True)
+        if os.name == 'nt':
+            os.startfile(self.output_folder)
+        else:
+            import subprocess
+            subprocess.run(['xdg-open', self.output_folder])
+
+    def show_context_menu(self, position):
+        selected = self.file_list.selectedItems()
+        if not selected:
+            return
+
+        menu = QMenu(self)
+
+        remove_action = menu.addAction("🗑️ Удалить из списка")
+        menu.addSeparator()
+        open_folder_action = menu.addAction("📂 Открыть расположение файла")
+
+        action = menu.exec(self.file_list.mapToGlobal(position))
+
+        if action == remove_action:
+            self.remove_selected_files()
+        elif action == open_folder_action:
+            if selected:
+                file_path = selected[0].data(Qt.ItemDataRole.UserRole)
+                folder = str(Path(file_path).parent)
+                if os.name == 'nt':
+                    os.startfile(folder)
+                else:
+                    import subprocess
+                    subprocess.run(['xdg-open', folder])
+
+    def remove_selected_files(self):
+        selected = self.file_list.selectedItems()
+        for item in selected:
+            file_path = item.data(Qt.ItemDataRole.UserRole)
+            if file_path in self.files:
+                self.files.remove(file_path)
+            row = self.file_list.row(item)
+            self.file_list.takeItem(row)
+
+        self.update_ui_state()
+        self.status_bar.showMessage(f"Удалено: {len(selected)}. Осталось: {len(self.files)}")
+
+    def on_rows_moved(self):
+        self.sync_files_from_list()
+
+    def sync_files_from_list(self):
+        self.files = []
+        for i in range(self.file_list.count()):
+            item = self.file_list.item(i)
+            file_path = item.data(Qt.ItemDataRole.UserRole)
+            if file_path:
+                self.files.append(file_path)
+
+    def move_item_up(self):
+        current_row = self.file_list.currentRow()
+        if current_row > 0:
+            item = self.file_list.takeItem(current_row)
+            self.file_list.insertItem(current_row - 1, item)
+            self.file_list.setCurrentRow(current_row - 1)
+            self.sync_files_from_list()
+
+    def move_item_down(self):
+        current_row = self.file_list.currentRow()
+        if current_row < self.file_list.count() - 1:
+            item = self.file_list.takeItem(current_row)
+            self.file_list.insertItem(current_row + 1, item)
+            self.file_list.setCurrentRow(current_row + 1)
+            self.sync_files_from_list()
+
+    def on_internal_toggle(self, checked: bool):
+        self.threshold_spin.setEnabled(checked)
+
+    def clear_files(self):
+        self.files.clear()
+        self.file_list.clear()
+        self.total_progress.setValue(0)
+        self.file_progress.setValue(0)
+        self.update_ui_state()
+        self.status_bar.showMessage("Список очищен")
+
+    def update_ui_state(self):
+        has_files = len(self.files) > 0
+        self.process_btn.setEnabled(has_files and not self.is_processing())
+        self.clear_btn.setEnabled(has_files and not self.is_processing())
+
+    def is_processing(self) -> bool:
+        return self.worker is not None and self.worker.isRunning()
+
+    def start_processing(self):
+        if not self.files:
+            return
+
+        os.makedirs(self.output_folder, exist_ok=True)
+
+        self.total_progress.setValue(0)
+        self.file_progress.setValue(0)
+
+        for i in range(self.file_list.count()):
+            item = self.file_list.item(i)
+            text = item.text()
+            if text.startswith(("○", "✓", "⏳", "✗")):
+                text = "○" + text[1:]
+                item.setText(text)
+
+        self.worker = FFmpegWorker(self)
+        self.worker.set_files(self.files, self.output_folder)
+        self.worker.set_options(
+            self.noise_spin.value(),
+            self.min_duration_spin.value(),
+            self.remove_internal_cb.isChecked(),
+            self.threshold_spin.value(),
+            self.precise_cut_cb.isChecked()
+        )
+
+        self.worker.progress_total.connect(self.on_progress_total)
+        self.worker.progress_file.connect(self.on_progress_file)
+        self.worker.file_started.connect(self.on_file_started)
+        self.worker.file_completed.connect(self.on_file_completed)
+        self.worker.all_completed.connect(self.on_all_completed)
+        self.worker.log_message.connect(self.on_log_message)
+
+        self.process_btn.setEnabled(False)
+        self.clear_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.cancel_btn.show()
+        self.status_bar.showMessage("Обработка...")
+
+        self.worker.start()
+
+    def cancel_processing(self):
+        if self.worker:
+            self.worker.cancel()
+            self.status_bar.showMessage("Отмена...")
+
+    def on_progress_total(self, current: int, total: int):
+        progress = int((current / total) * 100) if total > 0 else 0
+        self.total_progress.setValue(progress)
+        self.total_progress_label.setText(f"Общий прогресс: {current}/{total}")
+
+    def on_progress_file(self, percent: int, filename: str):
+        self.file_progress.setValue(percent)
+        self.file_progress_label.setText(f"Текущий файл: {filename}")
+
+    def on_file_started(self, filename: str):
+        for i in range(self.file_list.count()):
+            item = self.file_list.item(i)
+            if filename in item.text():
+                text = item.text()
+                if text.startswith("○"):
+                    text = "⏳" + text[1:]
+                    item.setText(text)
+                break
+
+        self.status_bar.showMessage(f"Обработка: {filename}")
+
+    def on_file_completed(self, filename: str, success: bool, message: str):
+        for i in range(self.file_list.count()):
+            item = self.file_list.item(i)
+            if filename in item.text():
+                text = item.text()
+                if text.startswith("⏳"):
+                    icon = "✓" if success else "✗"
+                    text = icon + text[1:]
+                    item.setText(text)
+                    if message:
+                        item.setToolTip(f"{item.toolTip()}\n{message}")
+                break
+
+        if not success and message:
+            self.status_bar.showMessage(f"Ошибка: {message[:100]}")
+
+    def on_all_completed(self, successful: int, failed: int):
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.hide()
+
+        self.total_progress.setValue(100)
+
+        msg = f"Завершено! Успешно: {successful}"
+        if failed > 0:
+            msg += f", Ошибок: {failed}"
+        self.status_bar.showMessage(msg)
+
+        if self.merge_after_cb.isChecked() and successful >= 2:
+            self.start_merge_after_processing()
+        else:
+            self.process_btn.setEnabled(True)
+            self.clear_btn.setEnabled(True)
+
+            if successful > 0:
+                QMessageBox.information(
+                    self,
+                    "Обработка завершена",
+                    f"Успешно обработано: {successful} файлов\n"
+                    f"Ошибок: {failed}\n\n"
+                    f"Результаты сохранены в:\n{self.output_folder}"
+                )
+
+    def start_merge_after_processing(self):
+        from utils.file_utils import get_output_filename
+
+        trimmed_files = []
+        for file_path in self.files:
+            output_path = get_output_filename(file_path, self.output_folder)
+            if os.path.exists(output_path):
+                trimmed_files.append(output_path)
+            elif os.path.exists(file_path):
+                trimmed_files.append(file_path)
+
+        if len(trimmed_files) < 2:
+            self.status_bar.showMessage("Недостаточно файлов для склейки")
+            self.process_btn.setEnabled(True)
+            self.clear_btn.setEnabled(True)
+            return
+
+        merged_path = str(Path(self.output_folder) / "merged.mp4")
+        counter = 1
+        while os.path.exists(merged_path):
+            merged_path = str(Path(self.output_folder) / f"merged_{counter}.mp4")
+            counter += 1
+
+        self.status_bar.showMessage("Склейка видео...")
+
+        from core.ffmpeg_worker import MergeWorker
+        self.merge_worker = MergeWorker(self)
+        self.merge_worker.set_files(trimmed_files, merged_path)
+        self.merge_worker.progress.connect(self.on_merge_progress)
+        self.merge_worker.finished_signal.connect(self.on_merge_finished)
+        self.merge_worker.start()
+
+    def on_merge_progress(self, percent: int, message: str):
+        self.file_progress.setValue(percent)
+        self.status_bar.showMessage(message)
+
+    def on_merge_finished(self, success: bool, message: str):
+        self.process_btn.setEnabled(True)
+        self.clear_btn.setEnabled(True)
+        self.file_progress.setValue(100 if success else 0)
+
+        if success:
+            QMessageBox.information(self, "Готово", f"Обработка и склейка завершены!\n\n{message}")
+        else:
+            QMessageBox.critical(self, "Ошибка склейки", message)
+
+        self.status_bar.showMessage("Готово" if success else "Ошибка")
+
+    def on_log_message(self, message: str):
+        self.status_bar.showMessage(message)
