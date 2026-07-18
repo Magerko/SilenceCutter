@@ -34,3 +34,6 @@ concat_list.txt
 
 # ffmpeg binaries fetched at build time, never committed
 vendor/
+
+# packaged release archives
+SilenceCutter-windows-*.zip
