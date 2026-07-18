@@ -1,0 +1,93 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: '3.12'
+  FFMPEG_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller==6.20.0 pillow
+
+      - name: Fetch ffmpeg
+        run: |
+          Invoke-WebRequest $env:FFMPEG_URL -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_dl
+          New-Item -ItemType Directory -Force vendor | Out-Null
+          Copy-Item (Get-ChildItem ffmpeg_dl -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName vendor\ffmpeg.exe
+          $license = Get-ChildItem ffmpeg_dl -Recurse -Include LICENSE.txt, LICENSE | Select-Object -First 1
+          if ($license) { Copy-Item $license.FullName vendor\FFMPEG-LICENSE.txt }
+          '{0:N1} MB' -f ((Get-Item vendor\ffmpeg.exe).Length / 1MB)
+
+      - name: Regenerate icon
+        run: python tools/make_icon.py
+
+      - name: Build
+        run: pyinstaller --noconfirm --clean SilenceCutter.spec
+
+      - name: Verify the build starts and finds ffmpeg
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          if (-not (Test-Path dist\SilenceCutter\_internal\ffmpeg.exe)) {
+            throw 'ffmpeg was not bundled into the build'
+          }
+          $proc = Start-Process dist\SilenceCutter\SilenceCutter.exe -PassThru
+          Start-Sleep -Seconds 15
+          if ($proc.HasExited) {
+            throw "app exited on startup with code $($proc.ExitCode)"
+          }
+          Stop-Process -Id $proc.Id -Force
+          Write-Host 'startup OK'
+
+      - name: Package
+        run: |
+          if (Test-Path vendor\FFMPEG-LICENSE.txt) {
+            Copy-Item vendor\FFMPEG-LICENSE.txt dist\SilenceCutter\FFMPEG-LICENSE.txt
+          }
+          Copy-Item LICENSE dist\SilenceCutter\LICENSE.txt
+          Compress-Archive -Path dist\SilenceCutter\* -DestinationPath SilenceCutter-windows-x64.zip
+          '{0:N1} MB' -f ((Get-Item SilenceCutter-windows-x64.zip).Length / 1MB)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SilenceCutter-windows-x64
+          path: SilenceCutter-windows-x64.zip
+          retention-days: 14
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$env:GITHUB_REF_NAME" SilenceCutter-windows-x64.zip `
+            --title "SilenceCutter $env:GITHUB_REF_NAME" `
+            --generate-notes

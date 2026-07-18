@@ -31,3 +31,6 @@ ENV/
 .DS_Store
 Thumbs.db
 concat_list.txt
+
+# ffmpeg binaries fetched at build time, never committed
+vendor/
