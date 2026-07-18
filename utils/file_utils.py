@@ -1,8 +1,9 @@
-import os
+import re
 import subprocess
-import json
 from pathlib import Path
 from typing import Optional, Tuple
+
+from utils.ffmpeg_locator import ffmpeg_path, subprocess_kwargs
 
 
 VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpeg', '.mpg'}
@@ -30,19 +31,21 @@ def get_output_filename(input_path: str, output_folder: str) -> str:
     return str(Path(output_folder) / output_name)
 
 
+DURATION_PATTERN = re.compile(r'Duration:\s*(\d+):(\d+):(\d+\.?\d*)')
+
+
 def get_video_duration(file_path: str) -> Optional[float]:
+    # Read it off ffmpeg's own header dump rather than shelling out to ffprobe,
+    # which keeps a second ~100 MB binary out of the release.
     try:
-        cmd = [
-            'ffprobe',
-            '-v', 'quiet',
-            '-print_format', 'json',
-            '-show_format',
-            file_path
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            return float(data['format']['duration'])
+        cmd = [ffmpeg_path(), '-hide_banner', '-i', file_path]
+        result = subprocess.run(cmd, capture_output=True, timeout=30, **subprocess_kwargs())
+        # ffmpeg exits non-zero here because no output file was given; the
+        # header we want has already been written to stderr by then.
+        match = DURATION_PATTERN.search(result.stderr or '')
+        if match:
+            hours, minutes, seconds = match.groups()
+            return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
     except Exception:
         pass
     return None
@@ -60,10 +63,10 @@ def format_duration(seconds: Optional[float]) -> str:
 def check_ffmpeg_available() -> Tuple[bool, str]:
     try:
         result = subprocess.run(
-            ['ffmpeg', '-version'],
+            [ffmpeg_path(), '-version'],
             capture_output=True,
-            text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            timeout=15,
+            **subprocess_kwargs()
         )
         if result.returncode == 0:
             version_line = result.stdout.split('\n')[0]
@@ -71,5 +74,7 @@ def check_ffmpeg_available() -> Tuple[bool, str]:
         return False, "FFMPEG not found"
     except FileNotFoundError:
         return False, "FFMPEG not installed or not in PATH"
+    except subprocess.TimeoutExpired:
+        return False, "FFMPEG did not respond"
     except Exception as e:
         return False, str(e)

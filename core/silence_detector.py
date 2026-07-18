@@ -1,8 +1,9 @@
-import os
 import re
 import subprocess
 from dataclasses import dataclass
 from typing import Optional, Tuple, List
+
+from utils.ffmpeg_locator import ffmpeg_path, subprocess_kwargs
 
 
 @dataclass
@@ -20,7 +21,7 @@ def detect_silence(
     progress_callback=None
 ) -> Tuple[Optional[SilenceInfo], Optional[str]]:
     cmd = [
-        'ffmpeg',
+        ffmpeg_path(),
         '-i', file_path,
         '-af', f'silencedetect=noise={noise_threshold}:d={min_duration}',
         '-f', 'null',
@@ -32,14 +33,13 @@ def detect_silence(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            **subprocess_kwargs()
         )
 
         stdout, stderr = process.communicate()
 
-        if process.returncode != 0 and "silencedetect" not in stderr:
-            return None, f"FFMPEG error: {stderr[:200]}"
+        if process.returncode != 0:
+            return None, f"FFMPEG error: {stderr[-300:]}"
 
         silence_starts = []
         silence_ends = []

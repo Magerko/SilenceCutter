@@ -89,6 +89,7 @@ class MainWindow(QMainWindow):
         self.files: List[str] = []
         self.output_folder: str = str(Path.home() / "Videos" / "Trimmed")
         self.worker: Optional[FFmpegWorker] = None
+        self.merge_worker = None
 
         self.init_ui()
         self.check_ffmpeg()
@@ -604,3 +605,15 @@ class MainWindow(QMainWindow):
 
     def on_log_message(self, message: str):
         self.status_bar.showMessage(message)
+
+    def closeEvent(self, event):
+        # A QThread still running when its owner is destroyed takes the whole
+        # process down, which in a windowed build looks like a silent crash.
+        for worker in (self.worker, self.merge_worker):
+            if worker is None or not worker.isRunning():
+                continue
+            worker.cancel()
+            if not worker.wait(10000):
+                worker.terminate()
+                worker.wait()
+        event.accept()

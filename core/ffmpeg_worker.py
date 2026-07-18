@@ -1,13 +1,13 @@
 import os
 import re
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import List, Tuple
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.silence_detector import detect_silence, get_trim_times, get_segments_without_silence
+from utils.ffmpeg_locator import ffmpeg_path, subprocess_kwargs
 from utils.file_utils import get_output_filename
 
 
@@ -140,6 +140,20 @@ class FFmpegWorker(QThread):
                 return True, f"Обрезано {saved:.1f}s тишины"
             return success, msg
 
+    @staticmethod
+    def _abort(process, output_path: str):
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        # ffmpeg was killed mid-write, so whatever landed on disk is a broken file.
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
+
     def _trim_video_simple(
         self,
         input_path: str,
@@ -150,7 +164,7 @@ class FFmpegWorker(QThread):
     ) -> Tuple[bool, str]:
         if self.precise_cut:
             cmd = [
-                'ffmpeg',
+                ffmpeg_path(),
                 '-y',
                 '-i', input_path,
                 '-ss', str(start_time),
@@ -165,7 +179,7 @@ class FFmpegWorker(QThread):
             ]
         else:
             cmd = [
-                'ffmpeg',
+                ffmpeg_path(),
                 '-y',
                 '-ss', str(start_time),
                 '-i', input_path,
@@ -180,16 +194,15 @@ class FFmpegWorker(QThread):
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                **subprocess_kwargs()
             )
 
-            duration = end_time - start_time
+            duration = max(0.0, end_time - start_time)
             stderr_lines = []
 
             while True:
                 if self._cancelled:
-                    process.terminate()
+                    self._abort(process, output_path)
                     return False, "Cancelled"
 
                 line = process.stderr.readline()
@@ -247,7 +260,7 @@ class FFmpegWorker(QThread):
             filter_complex = "".join(filter_parts)
 
             cmd = [
-                'ffmpeg',
+                ffmpeg_path(),
                 '-y',
                 '-i', input_path,
                 '-filter_complex', filter_complex,
@@ -265,20 +278,22 @@ class FFmpegWorker(QThread):
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                **subprocess_kwargs()
             )
 
             total_duration = sum(end - start for start, end in segments)
+            stderr_lines = []
 
             while True:
                 if self._cancelled:
-                    process.terminate()
+                    self._abort(process, output_path)
                     return False, "Cancelled"
 
                 line = process.stderr.readline()
                 if not line and process.poll() is not None:
                     break
+
+                stderr_lines.append(line)
 
                 time_match = re.search(r'time=(\d+):(\d+):(\d+\.?\d*)', line)
                 if time_match:
@@ -291,12 +306,14 @@ class FFmpegWorker(QThread):
                         progress = min(99, int(30 + (current_time / total_duration) * 70))
                         self.progress_file.emit(progress, filename)
 
+            process.wait()
+            stderr_text = "".join(stderr_lines)
+
             if process.returncode == 0:
                 self.progress_file.emit(100, filename)
                 return True, f"Removed {len(segments)-1} pauses"
             else:
-                stderr = process.stderr.read() if process.stderr else ""
-                return False, f"FFMPEG error: {stderr[:150]}"
+                return False, f"FFMPEG error (code {process.returncode}): {stderr_text[-300:]}"
 
         except Exception as e:
             return False, str(e)
@@ -332,7 +349,7 @@ class MergeWorker(QThread):
             self.progress.emit(10, "Склейка видео...")
 
             cmd = [
-                'ffmpeg',
+                ffmpeg_path(),
                 '-y',
                 '-f', 'concat',
                 '-safe', '0',
@@ -345,8 +362,7 @@ class MergeWorker(QThread):
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                **subprocess_kwargs()
             )
 
             stderr_lines = []
