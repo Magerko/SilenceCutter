@@ -17,6 +17,7 @@ from core.profanity_worker import ProfanityWorker
 from core.loudness import WINDOW_SECONDS, compute_envelope, segments_below
 from core import transcribe
 from ui.track import LoudnessTrack, MarkersTrack, RangesTrack, BUSY, EMPTY, ERROR, READY
+from ui.model_download import ModelDownloadPanel
 from utils.paths import resource_path
 
 
@@ -384,9 +385,9 @@ class MainWindow(QMainWindow):
         self.model_status.setStyleSheet("background: transparent;")
         layout.addWidget(self.model_status)
 
-        self.model_progress = QProgressBar()
-        self.model_progress.setVisible(False)
-        layout.addWidget(self.model_progress)
+        self.model_panel = ModelDownloadPanel()
+        self.model_panel.cancel_requested.connect(self.cancel_processing)
+        layout.addWidget(self.model_panel)
 
         # Дорожка показывает, где по ролику разбросаны заглушения, — по списку
         # времён это не читается. Подтверждения перед обработкой нет, поэтому
@@ -800,20 +801,14 @@ class MainWindow(QMainWindow):
         self.file_progress_label.setText(message)
 
     def on_model_download_started(self, model_name: str, size_mb: float):
-        self.model_progress.setVisible(True)
-        self.model_progress.setValue(0)
-        self.model_status.setText(
-            f"Скачивается модель распознавания «{model_name}» — "
-            f"около {size_mb / 1024:.1f} ГБ. Это делается один раз."
-        )
+        self.model_status.setText('')
+        self.model_panel.start(model_name, size_mb)
         self.status_bar.showMessage("Скачивание модели распознавания...")
 
     def on_model_progress(self, percent: int, done_mb: float, total_mb: float):
-        self.model_progress.setValue(percent)
-        self.model_status.setText(
-            f"Скачивание модели: {done_mb:.0f} из {total_mb:.0f} МБ ({percent}%)")
+        self.model_panel.update_progress(percent, done_mb, total_mb)
         if percent >= 100:
-            self.model_progress.setVisible(False)
+            self.model_panel.finish()
             self._refresh_model_status()
 
     def on_profanity_report(self, filename: str, duration: float, muted: list):
