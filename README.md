@@ -92,7 +92,9 @@ video_trimmer/
 
 ## Автор
 
-**Telegram:** [@magerdev1](https://t.me/magerdev1)
+**Telegram:** [@magerdev1](https://t.me/magerdev1) — там выходят новые программы и обновления.
+
+**Поддержать разработку:** [DonatePay](https://donatepay.eu/don/34347) · [в гривнах](https://donatello.to/magerdev1)
 
 ## Лицензия
 

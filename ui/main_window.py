@@ -19,6 +19,7 @@ from core import transcribe
 from ui.track import LoudnessTrack, MarkersTrack, RangesTrack, BUSY, EMPTY, ERROR, READY
 from ui.model_download import ModelDownloadPanel
 from utils.paths import resource_path
+from utils import links
 
 
 # Окно применяет тёмное оформление, поэтому берётся тёмный набор иконок.
@@ -448,6 +449,17 @@ class MainWindow(QMainWindow):
         action_layout.addWidget(self.process_btn)
 
         layout.addLayout(action_layout)
+
+        self.links_label = QLabel(
+            f'Больше программ в Telegram-канале: '
+            f'<a href="{links.TELEGRAM}">@magerdev1</a>'
+            f' · <a href="{links.DONATE}">поддержать</a>'
+            f' · <a href="{links.DONATE_UAH}">в гривнах</a>')
+        self.links_label.setTextFormat(Qt.TextFormat.RichText)
+        self.links_label.setOpenExternalLinks(True)
+        self.links_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.links_label.setStyleSheet('background: transparent; color: #868c96;')
+        layout.addWidget(self.links_label)
 
     def on_tab_changed(self, index: int):
         is_profanity = index == 1
