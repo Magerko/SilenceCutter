@@ -278,6 +278,151 @@ class LoudnessTrack(TrackWidget):
         self.threshold_changed.emit(self.threshold_db)
 
 
+class RangesTrack(TrackWidget):
+    """Редактируемые отрезки: тянут мышью вместо ввода 1:20-2:35 текстом."""
+
+    ranges_changed = pyqtSignal(list)
+
+    # Насколько близко к краю нужно попасть, чтобы тянуть именно край.
+    EDGE_GRIP_PX = 6
+    # Отрезки короче этого считаем случайным щелчком и выбрасываем.
+    MIN_RANGE_SECONDS = 0.2
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(84)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.selected: Optional[int] = None
+        self._drag_mode: Optional[str] = None
+        self._drag_index: Optional[int] = None
+        self._drag_anchor = 0.0
+
+    # --- взаимодействие -------------------------------------------------
+    def _hit_test(self, x: float):
+        """Что под курсором: край отрезка, его тело или пустое место."""
+        grip = abs(self.time_for_x(self.EDGE_GRIP_PX) - self.time_for_x(0))
+        for index, (start, end) in enumerate(self.segments):
+            seconds = self.time_for_x(x)
+            if abs(seconds - start) <= grip:
+                return index, 'left'
+            if abs(seconds - end) <= grip:
+                return index, 'right'
+            if start < seconds < end:
+                return index, 'body'
+        return None, None
+
+    def mousePressEvent(self, event):
+        if self.state != READY or self.duration <= 0:
+            return
+        x = event.position().x()
+        index, part = self._hit_test(x)
+        seconds = self.time_for_x(x)
+
+        if index is None:
+            # Пустое место — начинаем новый отрезок.
+            self.segments.append((seconds, seconds))
+            self.selected = len(self.segments) - 1
+            self._drag_index = self.selected
+            self._drag_mode = 'right'
+        else:
+            self.selected = index
+            self._drag_index = index
+            self._drag_mode = part
+            self._drag_anchor = seconds
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_mode is None or self._drag_index is None:
+            return
+        seconds = self.time_for_x(event.position().x())
+        start, end = self.segments[self._drag_index]
+
+        if self._drag_mode == 'left':
+            start = min(seconds, end)
+        elif self._drag_mode == 'right':
+            end = max(seconds, start)
+        else:
+            shift = seconds - self._drag_anchor
+            width = end - start
+            start = max(0.0, min(self.duration - width, start + shift))
+            end = start + width
+            self._drag_anchor = seconds
+
+        self.segments[self._drag_index] = (max(0.0, start), min(self.duration, end))
+        self.update()
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_mode is None:
+            return
+        self._drag_mode = None
+        self._drag_index = None
+        self._normalise()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            if self.selected is not None and 0 <= self.selected < len(self.segments):
+                del self.segments[self.selected]
+                self.selected = None
+                self._normalise()
+                return
+        super().keyPressEvent(event)
+
+    def _normalise(self):
+        """Выбросить случайные щелчки, упорядочить и слить пересечения."""
+        kept = [(start, end) for start, end in self.segments
+                if end - start >= self.MIN_RANGE_SECONDS]
+        kept.sort()
+
+        merged = []
+        for start, end in kept:
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+
+        self.segments = merged
+        self.selected = None
+        self.update()
+        self.ranges_changed.emit(list(self.segments))
+
+    def set_ranges(self, ranges: List[Tuple[float, float]]):
+        self.segments = list(ranges)
+        self.update()
+
+    # --- отрисовка ------------------------------------------------------
+    def paint_body(self, painter: QPainter, body: QRectF):
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self.colours['body'])
+        painter.drawRoundedRect(body, 4, 4)
+
+        if not self.segments:
+            painter.setPen(self.colours['muted'])
+            font = QFont(painter.font())
+            font.setPointSize(9)
+            painter.setFont(font)
+            painter.drawText(body, Qt.AlignmentFlag.AlignCenter,
+                             'Протяните мышью, чтобы отметить участок')
+            return
+
+        # Отрезки здесь — то, что будет обработано, поэтому цвет акцентный,
+        # а не коралловый: коралловым на других дорожках помечено удаляемое.
+        for index, (start, end) in enumerate(self.segments):
+            left = self.x_for_time(start)
+            width = max(2.0, self.x_for_time(end) - left)
+            rect = QRectF(left, body.top() + 3, width, body.height() - 6)
+            fill = QColor(self.colours['keep'])
+            fill.setAlpha(200 if index == self.selected else 150)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(fill)
+            painter.drawRoundedRect(rect, 3, 3)
+            # Края подчёркнуты: за них тянут.
+            painter.setPen(QPen(self.colours['keep'], 2))
+            painter.drawLine(int(rect.left()), int(rect.top()),
+                             int(rect.left()), int(rect.bottom()))
+            painter.drawLine(int(rect.right()), int(rect.top()),
+                             int(rect.right()), int(rect.bottom()))
+
+
 class MarkersTrack(TrackWidget):
     """Метки-события: где заглушены слова."""
 

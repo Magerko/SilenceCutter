@@ -16,7 +16,7 @@ from core.ffmpeg_worker import FFmpegWorker
 from core.profanity_worker import ProfanityWorker
 from core.loudness import WINDOW_SECONDS, compute_envelope, segments_below
 from core import transcribe
-from ui.track import LoudnessTrack, MarkersTrack, BUSY, EMPTY, ERROR, READY
+from ui.track import LoudnessTrack, MarkersTrack, RangesTrack, BUSY, EMPTY, ERROR, READY
 from utils.paths import resource_path
 
 
@@ -358,15 +358,22 @@ class MainWindow(QMainWindow):
         self.ranges_widget = QWidget()
         ranges_layout = QVBoxLayout(self.ranges_widget)
         ranges_layout.setContentsMargins(0, 0, 0, 0)
-        ranges_hint = QLabel(
-            "Участки времени, по одному в строке: 1:20-2:35"
-        )
-        ranges_hint.setStyleSheet("background: transparent;")
-        ranges_layout.addWidget(ranges_hint)
-        self.ranges_edit = QPlainTextEdit()
-        self.ranges_edit.setPlaceholderText("1:20-2:35\n5:00-6:10")
-        self.ranges_edit.setFixedHeight(70)
-        ranges_layout.addWidget(self.ranges_edit)
+
+        # Участки отмечают мышью, а не набирают текстом: положение на
+        # длительности видно сразу, и промахнуться в формате невозможно.
+        self.ranges_track = RangesTrack()
+        self.ranges_track.set_state(EMPTY, 'Выберите файл в списке, чтобы отметить участки')
+        self.ranges_track.ranges_changed.connect(self.on_ranges_changed)
+        ranges_layout.addWidget(self.ranges_track)
+
+        self.ranges_summary = QLabel(
+            'Протяните мышью по дорожке, чтобы отметить участок. '
+            'Края можно двигать, сам участок — перетаскивать, '
+            'выделенный удаляется клавишей Delete.')
+        self.ranges_summary.setWordWrap(True)
+        self.ranges_summary.setStyleSheet('background: transparent; color: #868c96;')
+        ranges_layout.addWidget(self.ranges_summary)
+
         self.ranges_widget.setVisible(False)
         layout.addWidget(self.ranges_widget)
 
@@ -462,38 +469,28 @@ class MainWindow(QMainWindow):
         )
 
     def parse_ranges(self) -> List[Tuple[float, float]]:
-        """Разобрать участки вида 1:20-2:35. Пустой список означает всё видео."""
+        """Отмеченные участки. Пустой список означает всё видео."""
         if self.scope_combo.currentData() != "ranges":
             return []
+        return list(self.ranges_track.segments)
 
-        def to_seconds(value: str) -> float:
-            parts = [float(p) for p in value.strip().split(":")]
-            seconds = 0.0
-            for part in parts:
-                seconds = seconds * 60 + part
-            return seconds
+    def on_ranges_changed(self, ranges: list):
+        if not ranges:
+            self.ranges_summary.setText(
+                'Протяните мышью по дорожке, чтобы отметить участок. '
+                'Края можно двигать, сам участок — перетаскивать, '
+                'выделенный удаляется клавишей Delete.')
+            return
 
-        ranges = []
-        for line_number, line in enumerate(
-                self.ranges_edit.toPlainText().splitlines(), start=1):
-            line = line.strip()
-            if not line:
-                continue
-            # Принимаем и дефис, и тире — их легко перепутать при наборе.
-            separator = next((s for s in ("-", "–", "—") if s in line), None)
-            if not separator:
-                raise ValueError(
-                    f"Строка {line_number}: нужен интервал вида 1:20-2:35")
-            left, right = line.split(separator, 1)
-            try:
-                start, end = to_seconds(left), to_seconds(right)
-            except ValueError:
-                raise ValueError(f"Строка {line_number}: непонятное время «{line}»")
-            if end <= start:
-                raise ValueError(
-                    f"Строка {line_number}: конец участка не позже начала")
-            ranges.append((start, end))
-        return ranges
+        def as_time(seconds: float) -> str:
+            return f'{int(seconds) // 60}:{int(seconds) % 60:02d}'
+
+        total = sum(end - start for start, end in ranges)
+        listed = ', '.join(f'{as_time(s)}–{as_time(e)}' for s, e in ranges[:4])
+        if len(ranges) > 4:
+            listed += f' и ещё {len(ranges) - 4}'
+        self.ranges_summary.setText(
+            f'Отмечено участков: {len(ranges)}, всего {as_time(total)} — {listed}')
 
     # --- дорожка громкости ------------------------------------------------
     def on_file_selected(self, row: int):
@@ -525,6 +522,10 @@ class MainWindow(QMainWindow):
         self.track.set_threshold(self.noise_spin.value())
         self.track.set_state(READY)
         self.refresh_track_segments()
+
+        # Участки для антимата размечаются по той же длительности.
+        self.ranges_track.set_duration(duration)
+        self.ranges_track.set_state(READY)
 
     def on_envelope_failed(self, message: str):
         self.track.set_state(ERROR, message)
