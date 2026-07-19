@@ -3,7 +3,8 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QIcon
+from PyQt6.QtGui import (QDragEnterEvent, QDropEvent, QIcon, QPainter,
+                         QColor, QFont)
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QPushButton,
@@ -64,57 +65,54 @@ from utils.file_utils import (
 )
 
 
-class DropZone(QFrame):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("dropZone")
+class FileListWidget(QListWidget):
+    """Список видео, он же зона перетаскивания.
+
+    Раньше над списком висела отдельная рамка «перетащите сюда»: она занимала
+    полтораста пикселей высоты и делала ровно то же, что теперь делает сам
+    список. Пока файлов нет, подсказка рисуется прямо на пустом месте.
+    """
+
+    EMPTY_TITLE = "Перетащите видео или папки сюда"
+    EMPTY_HINT = "или нажмите «Добавить файлы»"
+
+    def __init__(self, main_window=None):
+        super().__init__(main_window)
+        self.main_window = main_window
         self.setAcceptDrops(True)
-        self.main_window = parent
+        self.setObjectName("fileList")
 
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        icon_label = QLabel()
-        icon_label.setPixmap(icon('scissors').pixmap(48, 48))
-        icon_label.setStyleSheet("background: transparent;")
-        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        text_label = QLabel("Перетащите видео или папки сюда")
-        text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Коралловый здесь означал бы ошибку — это приглашение, а не отказ.
-        text_label.setStyleSheet("font-size: 16px; font-weight: 600; background: transparent;")
-
-        subtext_label = QLabel("или нажмите для выбора файлов")
-        subtext_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtext_label.setStyleSheet("background: transparent;")
-        subtext_label.setObjectName("subtitleLabel")
-
-        layout.addWidget(icon_label)
-        layout.addWidget(text_label)
-        layout.addWidget(subtext_label)
-
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-    def mousePressEvent(self, event):
-        if self.main_window:
-            self.main_window.add_files_dialog()
+    def _accepts(self, event) -> bool:
+        return event.mimeData().hasUrls()
 
     def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasUrls():
+        # Внутреннее перетаскивание меняет порядок файлов — его не трогаем.
+        if self._accepts(event):
             event.acceptProposedAction()
-            self.setObjectName("dropZoneActive")
-            self.style().unpolish(self)
-            self.style().polish(self)
+            self._set_active(True)
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if self._accepts(event):
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
 
     def dragLeaveEvent(self, event):
-        self.setObjectName("dropZone")
+        self._set_active(False)
+        super().dragLeaveEvent(event)
+
+    def _set_active(self, active: bool):
+        self.setProperty("dragActive", "yes" if active else "no")
         self.style().unpolish(self)
         self.style().polish(self)
 
     def dropEvent(self, event: QDropEvent):
-        self.setObjectName("dropZone")
-        self.style().unpolish(self)
-        self.style().polish(self)
+        if not self._accepts(event):
+            super().dropEvent(event)
+            return
+        self._set_active(False)
 
         files = []
         for url in event.mimeData().urls():
@@ -126,8 +124,43 @@ class DropZone(QFrame):
 
         if files and self.main_window:
             self.main_window.add_files(files)
-
         event.acceptProposedAction()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.count():
+            return
+        # Подсказка на пустом списке: без неё рамка выглядит просто дырой и не
+        # сообщает, что в неё можно бросать файлы.
+        painter = QPainter(self.viewport())
+        painter.setPen(QColor(self.palette().color(self.foregroundRole())))
+        area = self.viewport().rect()
+
+        pixmap = icon('scissors').pixmap(40, 40)
+        if not pixmap.isNull():
+            painter.setOpacity(0.55)
+            painter.drawPixmap(area.center().x() - pixmap.width() // 2,
+                               area.center().y() - 52, pixmap)
+            painter.setOpacity(1.0)
+
+        # Размер шрифта берём в пикселях: стили задают его через font-size в px,
+        # и тогда pointSize() возвращает -1 — прибавка к нему давала текст в
+        # один пункт, то есть пару чёрточек вместо подсказки.
+        font = painter.font()
+        base = font.pixelSize() if font.pixelSize() > 0 else 13
+        font.setPixelSize(base + 3)
+        font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(font)
+        painter.drawText(area.adjusted(0, 8, 0, 0), Qt.AlignmentFlag.AlignCenter,
+                         self.EMPTY_TITLE)
+
+        font.setPixelSize(base)
+        font.setWeight(QFont.Weight.Normal)
+        painter.setFont(font)
+        painter.setOpacity(0.7)
+        painter.drawText(area.adjusted(0, 52, 0, 0), Qt.AlignmentFlag.AlignCenter,
+                         self.EMPTY_HINT)
+        painter.end()
 
 
 class MainWindow(QMainWindow):
@@ -167,12 +200,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(16)
 
         # Название приложения внутри окна не пишем: система уже показывает его
-        # в заголовке, а вторая такая же надпись только отнимала высоту у
-        # списка файлов и ничего не сообщала.
-        self.drop_zone = DropZone(self)
-        self.drop_zone.setMinimumHeight(140)
-        layout.addWidget(self.drop_zone)
-
+        # в заголовке.
         btn_layout = QHBoxLayout()
 
         self.add_files_btn = QPushButton(icon('file'), " Добавить файлы")
@@ -189,8 +217,10 @@ class MainWindow(QMainWindow):
         files_label = QLabel("Файлы для обработки:")
         layout.addWidget(files_label)
 
-        self.file_list = QListWidget()
-        self.file_list.setMinimumHeight(150)
+        # Сам список и есть зона перетаскивания: отдельная рамка над ним
+        # занимала полтораста пикселей высоты и делала ровно то же самое.
+        self.file_list = FileListWidget(self)
+        self.file_list.setMinimumHeight(220)
         self.file_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.file_list.customContextMenuRequested.connect(self.show_context_menu)
         self.file_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)

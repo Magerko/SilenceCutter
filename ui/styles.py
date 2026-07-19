@@ -222,6 +222,12 @@ QListWidget {{
     padding: 4px;
     outline: none;
 }}
+/* Список видео принимает перетаскивание, поэтому под курсором с файлами он
+   подсвечивается — иначе непонятно, куда именно бросать. */
+QListWidget#fileList[dragActive="yes"] {{
+    border: 2px dashed {accent};
+    background: {accent_bg};
+}}
 QListWidget::item {{
     padding: 7px 10px;
     border-radius: 6px;
