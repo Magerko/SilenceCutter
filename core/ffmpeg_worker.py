@@ -7,7 +7,8 @@ from typing import List, Tuple
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.silence_detector import detect_silence, get_trim_times, get_segments_without_silence
-from utils.ffmpeg_locator import ffmpeg_path, subprocess_kwargs
+from utils.ffmpeg_locator import (ffmpeg_path, subprocess_kwargs,
+                                  video_encoder_args, encoder_ffmpeg_path)
 from utils.file_utils import get_output_filename
 
 
@@ -163,15 +164,15 @@ class FFmpegWorker(QThread):
         filename: str
     ) -> Tuple[bool, str]:
         if self.precise_cut:
+            # Точная обрезка перекодирует видео, поэтому берём ту сборку
+            # ffmpeg, которая умеет аппаратное кодирование.
             cmd = [
-                ffmpeg_path(),
+                encoder_ffmpeg_path(),
                 '-y',
                 '-i', input_path,
                 '-ss', str(start_time),
                 '-to', str(end_time),
-                '-c:v', 'libx264',
-                '-preset', 'fast',
-                '-crf', '18',
+                *video_encoder_args(),
                 '-c:a', 'aac',
                 '-b:a', '192k',
                 '-async', '1',
@@ -260,15 +261,13 @@ class FFmpegWorker(QThread):
             filter_complex = "".join(filter_parts)
 
             cmd = [
-                ffmpeg_path(),
+                encoder_ffmpeg_path(),
                 '-y',
                 '-i', input_path,
                 '-filter_complex', filter_complex,
                 '-map', '[outv]',
                 '-map', '[outa]',
-                '-c:v', 'libx264',
-                '-preset', 'fast',
-                '-crf', '18',
+                *video_encoder_args(),
                 '-c:a', 'aac',
                 '-b:a', '192k',
                 output_path
