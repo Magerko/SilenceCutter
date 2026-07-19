@@ -15,6 +15,13 @@ from PyQt6.QtWidgets import (
 from core.ffmpeg_worker import FFmpegWorker
 from core.profanity_worker import ProfanityWorker
 from core import transcribe
+from utils.paths import resource_path
+
+
+def icon(name: str) -> QIcon:
+    """Иконка из набора дизайн-системы; при отсутствии файла — пустая."""
+    path = resource_path(os.path.join('resources', 'icons', f'{name}.svg'))
+    return QIcon(path) if os.path.exists(path) else QIcon()
 from utils.file_utils import (
     is_video_file, get_video_files_from_folder,
     format_duration, get_video_duration, check_ffmpeg_available
@@ -97,7 +104,7 @@ class MainWindow(QMainWindow):
         self.check_ffmpeg()
 
     def init_ui(self):
-        self.setWindowTitle("✂️ SilenceCutter")
+        self.setWindowTitle("SilenceCutter")
         self.setMinimumSize(1200, 1000)
         self.resize(1200, 1000)
 
@@ -118,11 +125,11 @@ class MainWindow(QMainWindow):
 
         btn_layout = QHBoxLayout()
 
-        self.add_files_btn = QPushButton("📄 Добавить файлы")
+        self.add_files_btn = QPushButton(icon('file'), " Добавить файлы")
         self.add_files_btn.clicked.connect(self.add_files_dialog)
         btn_layout.addWidget(self.add_files_btn)
 
-        self.add_folder_btn = QPushButton("📁 Добавить папку")
+        self.add_folder_btn = QPushButton(icon('folder'), " Добавить папку")
         self.add_folder_btn.clicked.connect(self.add_folder_dialog)
         btn_layout.addWidget(self.add_folder_btn)
 
@@ -170,7 +177,7 @@ class MainWindow(QMainWindow):
         self.change_output_btn.clicked.connect(self.change_output_folder)
         output_layout.addWidget(self.change_output_btn)
 
-        self.open_folder_btn = QPushButton("📂 Открыть")
+        self.open_folder_btn = QPushButton(icon('folder'), " Открыть")
         self.open_folder_btn.clicked.connect(self.open_output_folder)
         self.open_folder_btn.setToolTip("Открыть папку назначения в проводнике")
         output_layout.addWidget(self.open_folder_btn)
@@ -353,20 +360,20 @@ class MainWindow(QMainWindow):
 
         action_layout = QHBoxLayout()
 
-        self.clear_btn = QPushButton("🗑️ Очистить")
+        self.clear_btn = QPushButton(icon('delete'), " Очистить")
         self.clear_btn.clicked.connect(self.clear_files)
         action_layout.addWidget(self.clear_btn)
 
         action_layout.addStretch()
 
-        self.cancel_btn = QPushButton("❌ Отменить")
+        self.cancel_btn = QPushButton(icon('close'), " Отменить")
         self.cancel_btn.setObjectName("dangerButton")
         self.cancel_btn.clicked.connect(self.cancel_processing)
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.hide()
         action_layout.addWidget(self.cancel_btn)
 
-        self.process_btn = QPushButton("▶️ Обработать все")
+        self.process_btn = QPushButton(icon('play'), " Обработать все")
         self.process_btn.setObjectName("primaryButton")
         self.process_btn.clicked.connect(self.start_processing)
         self.process_btn.setEnabled(False)
@@ -377,7 +384,7 @@ class MainWindow(QMainWindow):
     def on_tab_changed(self, index: int):
         is_profanity = index == 1
         self.process_btn.setText(
-            "▶️ Удалить мат" if is_profanity else "▶️ Обработать все")
+            " Удалить мат" if is_profanity else " Обработать все")
         if is_profanity:
             self._refresh_model_status()
 
@@ -511,9 +518,9 @@ class MainWindow(QMainWindow):
 
         menu = QMenu(self)
 
-        remove_action = menu.addAction("🗑️ Удалить из списка")
+        remove_action = menu.addAction(icon('delete'), "Удалить из списка")
         menu.addSeparator()
-        open_folder_action = menu.addAction("📂 Открыть расположение файла")
+        open_folder_action = menu.addAction(icon('folder'), "Открыть расположение файла")
 
         action = menu.exec(self.file_list.mapToGlobal(position))
 
