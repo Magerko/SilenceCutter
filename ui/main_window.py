@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QIcon
@@ -9,10 +9,12 @@ from PyQt6.QtWidgets import (
     QLabel, QListWidget, QListWidgetItem, QPushButton,
     QProgressBar, QLineEdit, QFileDialog, QFrame,
     QStatusBar, QMessageBox, QSizePolicy, QCheckBox,
-    QDoubleSpinBox, QMenu
+    QDoubleSpinBox, QMenu, QTabWidget, QComboBox, QPlainTextEdit
 )
 
 from core.ffmpeg_worker import FFmpegWorker
+from core.profanity_worker import ProfanityWorker
+from core import transcribe
 from utils.file_utils import (
     is_video_file, get_video_files_from_folder,
     format_duration, get_video_duration, check_ffmpeg_available
@@ -175,6 +177,24 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(output_layout)
 
+        # Список файлов и папка назначения общие для обеих задач, а настройки
+        # у каждой свои — поэтому вкладки начинаются здесь.
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_silence_tab(), "Тишина")
+        self.tabs.addTab(self._build_profanity_tab(), "Мат")
+        self.tabs.currentChanged.connect(self.on_tab_changed)
+        layout.addWidget(self.tabs)
+
+        self._build_progress_and_actions(layout)
+
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("Готово. Добавьте видео для обработки.")
+
+    def _build_silence_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
         settings_layout = QHBoxLayout()
         settings_layout.setSpacing(12)
 
@@ -239,7 +259,78 @@ class MainWindow(QMainWindow):
         options_layout.addStretch()
 
         layout.addLayout(options_layout)
+        layout.addStretch()
+        return tab
 
+    def _build_profanity_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        explanation = QLabel(
+            "Находит нецензурные слова в речи и заглушает их. "
+            "Видео не перекодируется — меняется только звук."
+        )
+        explanation.setWordWrap(True)
+        explanation.setStyleSheet("background: transparent;")
+        layout.addWidget(explanation)
+
+        scope_layout = QHBoxLayout()
+        scope_layout.setSpacing(12)
+        scope_label = QLabel("Обрабатывать:")
+        scope_label.setStyleSheet("background: transparent;")
+        scope_layout.addWidget(scope_label)
+
+        self.scope_combo = QComboBox()
+        self.scope_combo.addItem("Всё видео", "all")
+        self.scope_combo.addItem("Только указанные участки", "ranges")
+        self.scope_combo.currentIndexChanged.connect(self.on_scope_changed)
+        scope_layout.addWidget(self.scope_combo)
+
+        self.categories_cb = QCheckBox("Также грубые слова")
+        self.categories_cb.setStyleSheet("background: transparent;")
+        self.categories_cb.setToolTip(
+            "Помимо мата — бранная лексика вроде «говно», «сука»")
+        scope_layout.addWidget(self.categories_cb)
+
+        scope_layout.addStretch()
+        layout.addLayout(scope_layout)
+
+        self.ranges_widget = QWidget()
+        ranges_layout = QVBoxLayout(self.ranges_widget)
+        ranges_layout.setContentsMargins(0, 0, 0, 0)
+        ranges_hint = QLabel(
+            "Участки времени, по одному в строке: 1:20-2:35"
+        )
+        ranges_hint.setStyleSheet("background: transparent;")
+        ranges_layout.addWidget(ranges_hint)
+        self.ranges_edit = QPlainTextEdit()
+        self.ranges_edit.setPlaceholderText("1:20-2:35\n5:00-6:10")
+        self.ranges_edit.setFixedHeight(70)
+        ranges_layout.addWidget(self.ranges_edit)
+        self.ranges_widget.setVisible(False)
+        layout.addWidget(self.ranges_widget)
+
+        # Модель качается при первом запуске распознавания; пока её нет,
+        # человек должен видеть что происходит, а не гадать.
+        self.model_status = QLabel()
+        self.model_status.setWordWrap(True)
+        self.model_status.setStyleSheet("background: transparent;")
+        layout.addWidget(self.model_status)
+
+        self.model_progress = QProgressBar()
+        self.model_progress.setVisible(False)
+        layout.addWidget(self.model_progress)
+
+        self.profanity_report = QPlainTextEdit()
+        self.profanity_report.setReadOnly(True)
+        self.profanity_report.setPlaceholderText(
+            "После обработки здесь будет список заглушённых слов с их временем.")
+        layout.addWidget(self.profanity_report, 1)
+
+        self._refresh_model_status()
+        return tab
+
+    def _build_progress_and_actions(self, layout):
         progress_layout = QVBoxLayout()
         progress_layout.setSpacing(8)
 
@@ -283,9 +374,59 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(action_layout)
 
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("Готово. Добавьте видео для обработки.")
+    def on_tab_changed(self, index: int):
+        is_profanity = index == 1
+        self.process_btn.setText(
+            "▶️ Удалить мат" if is_profanity else "▶️ Обработать все")
+        if is_profanity:
+            self._refresh_model_status()
+
+    def on_scope_changed(self):
+        self.ranges_widget.setVisible(self.scope_combo.currentData() == "ranges")
+
+    def _refresh_model_status(self):
+        if transcribe.is_model_ready(transcribe.DEFAULT_MODEL):
+            self.model_status.setText("Модель распознавания готова к работе.")
+            return
+        size_mb = transcribe.MODEL_SIZES_MB.get(transcribe.DEFAULT_MODEL, 0)
+        self.model_status.setText(
+            f"Модель распознавания ещё не загружена — около {size_mb / 1024:.1f} ГБ. "
+            "Она скачается один раз, при первом запуске, и останется на компьютере."
+        )
+
+    def parse_ranges(self) -> List[Tuple[float, float]]:
+        """Разобрать участки вида 1:20-2:35. Пустой список означает всё видео."""
+        if self.scope_combo.currentData() != "ranges":
+            return []
+
+        def to_seconds(value: str) -> float:
+            parts = [float(p) for p in value.strip().split(":")]
+            seconds = 0.0
+            for part in parts:
+                seconds = seconds * 60 + part
+            return seconds
+
+        ranges = []
+        for line_number, line in enumerate(
+                self.ranges_edit.toPlainText().splitlines(), start=1):
+            line = line.strip()
+            if not line:
+                continue
+            # Принимаем и дефис, и тире — их легко перепутать при наборе.
+            separator = next((s for s in ("-", "–", "—") if s in line), None)
+            if not separator:
+                raise ValueError(
+                    f"Строка {line_number}: нужен интервал вида 1:20-2:35")
+            left, right = line.split(separator, 1)
+            try:
+                start, end = to_seconds(left), to_seconds(right)
+            except ValueError:
+                raise ValueError(f"Строка {line_number}: непонятное время «{line}»")
+            if end <= start:
+                raise ValueError(
+                    f"Строка {line_number}: конец участка не позже начала")
+            ranges.append((start, end))
+        return ranges
 
     def check_ffmpeg(self):
         available, message = check_ffmpeg_available()
@@ -462,18 +603,31 @@ class MainWindow(QMainWindow):
                 text = "○" + text[1:]
                 item.setText(text)
 
-        self.worker = FFmpegWorker(self)
-        self.worker.set_files(self.files, self.output_folder)
-        self.worker.set_options(
-            self.noise_spin.value(),
-            self.min_duration_spin.value(),
-            self.remove_internal_cb.isChecked(),
-            self.threshold_spin.value(),
-            self.precise_cut_cb.isChecked()
-        )
+        if self.tabs.currentIndex() == 1:
+            try:
+                ranges = self.parse_ranges()
+            except ValueError as error:
+                QMessageBox.warning(self, "Проверьте участки времени", str(error))
+                return
+            if self.scope_combo.currentData() == "ranges" and not ranges:
+                QMessageBox.warning(
+                    self, "Участки не указаны",
+                    "Выбрана обработка отдельных участков, но ни один не задан.")
+                return
+            self.worker = self._make_profanity_worker(ranges)
+        else:
+            self.worker = FFmpegWorker(self)
+            self.worker.set_files(self.files, self.output_folder)
+            self.worker.set_options(
+                self.noise_spin.value(),
+                self.min_duration_spin.value(),
+                self.remove_internal_cb.isChecked(),
+                self.threshold_spin.value(),
+                self.precise_cut_cb.isChecked()
+            )
+            self.worker.progress_total.connect(self.on_progress_total)
+            self.worker.progress_file.connect(self.on_progress_file)
 
-        self.worker.progress_total.connect(self.on_progress_total)
-        self.worker.progress_file.connect(self.on_progress_file)
         self.worker.file_started.connect(self.on_file_started)
         self.worker.file_completed.connect(self.on_file_completed)
         self.worker.all_completed.connect(self.on_all_completed)
@@ -486,6 +640,53 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Обработка...")
 
         self.worker.start()
+
+    def _make_profanity_worker(self, ranges) -> ProfanityWorker:
+        worker = ProfanityWorker(self)
+        worker.set_files(self.files, self.output_folder)
+        categories = ["strong", "rude"] if self.categories_cb.isChecked() else ["strong"]
+        worker.set_options(transcribe.DEFAULT_MODEL, categories,
+                           dual_language=True, ranges=ranges)
+
+        worker.progress.connect(self.on_profanity_progress)
+        worker.model_download_started.connect(self.on_model_download_started)
+        worker.model_progress.connect(self.on_model_progress)
+        worker.report.connect(self.on_profanity_report)
+
+        self.profanity_report.clear()
+        return worker
+
+    def on_profanity_progress(self, percent: int, message: str):
+        self.file_progress.setValue(percent)
+        self.file_progress_label.setText(message)
+
+    def on_model_download_started(self, model_name: str, size_mb: float):
+        self.model_progress.setVisible(True)
+        self.model_progress.setValue(0)
+        self.model_status.setText(
+            f"Скачивается модель распознавания «{model_name}» — "
+            f"около {size_mb / 1024:.1f} ГБ. Это делается один раз."
+        )
+        self.status_bar.showMessage("Скачивание модели распознавания...")
+
+    def on_model_progress(self, percent: int, done_mb: float, total_mb: float):
+        self.model_progress.setValue(percent)
+        self.model_status.setText(
+            f"Скачивание модели: {done_mb:.0f} из {total_mb:.0f} МБ ({percent}%)")
+        if percent >= 100:
+            self.model_progress.setVisible(False)
+            self._refresh_model_status()
+
+    def on_profanity_report(self, filename: str, muted: list):
+        if not muted:
+            self.profanity_report.appendPlainText(
+                f"{filename}: мат не найден, файл не изменён.")
+            return
+        self.profanity_report.appendPlainText(f"{filename}: заглушено {len(muted)}")
+        for start, end, word in muted:
+            minutes, seconds = divmod(int(start), 60)
+            self.profanity_report.appendPlainText(
+                f"    {minutes:02d}:{seconds:02d}  «{word}»  ({end - start:.2f} с)")
 
     def cancel_processing(self):
         if self.worker:
