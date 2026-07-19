@@ -18,9 +18,15 @@ from core import transcribe
 from utils.paths import resource_path
 
 
+# Окно применяет тёмное оформление, поэтому берётся тёмный набор иконок.
+# Наборы различаются только цветом контура: один общий серый давал на светлом
+# фоне 3,4:1, тогда как раздельные значения дают 8–10:1 в обеих темах.
+ICON_THEME = 'dark'
+
+
 def icon(name: str) -> QIcon:
     """Иконка из набора дизайн-системы; при отсутствии файла — пустая."""
-    path = resource_path(os.path.join('resources', 'icons', f'{name}.svg'))
+    path = resource_path(os.path.join('resources', 'icons', ICON_THEME, f'{name}.svg'))
     return QIcon(path) if os.path.exists(path) else QIcon()
 from utils.file_utils import (
     is_video_file, get_video_files_from_folder,
