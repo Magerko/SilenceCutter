@@ -3,6 +3,13 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Распознавание речи выполняется в отдельном процессе, и запускается он этим
+# же файлом с флагом. Проверка обязана стоять ДО импорта PyQt6: если Qt6
+# загрузится раньше ctranslate2, распознавание падает с нарушением доступа.
+if '--transcribe-worker' in sys.argv:
+    from core.transcribe_cli import run
+    sys.exit(run())
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
