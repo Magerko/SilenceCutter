@@ -56,6 +56,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "dist\SilenceCutter\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\SilenceCutter\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Распознавание речи — отдельный исполняемый файл со своим набором библиотек.
+; Без него вкладка «Мат» не работает, а установщик молча выходил бы неполным.
+Source: "dist\SilenceCutter\transcriber\*"; DestDir: "{app}\transcriber"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "dist\SilenceCutter\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "dist\SilenceCutter\FFMPEG-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 

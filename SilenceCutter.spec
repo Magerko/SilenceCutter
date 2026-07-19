@@ -1,6 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
 
+from PyInstaller.utils.hooks import collect_all
+
 # ffmpeg is not kept in the repository. Put it in vendor/ before building (the
 # release workflow downloads it); without it the app still builds and falls back
 # to whatever is on PATH. ffprobe is deliberately not shipped - durations are
@@ -10,17 +12,22 @@ candidate = os.path.join('vendor', 'ffmpeg.exe')
 if os.path.exists(candidate):
     binaries.append((candidate, '.'))
 
-datas = [('resources/icon.png', 'resources')]
+datas = [('resources/icon.png', 'resources'), ('resources/icons', 'resources/icons')]
 for extra in ('vendor/FFMPEG-LICENSE.txt', 'vendor/FFMPEG-README.txt'):
     if os.path.exists(extra):
         datas.append((extra, '.'))
+
+# Стек распознавания речи сюда намеренно не входит: он собирается отдельным
+# файлом (transcriber.spec). Qt6 и ctranslate2 конфликтуют при загрузке
+# нативных библиотек, и рядом в одной папке им находиться нельзя.
+hiddenimports = []
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -43,6 +50,12 @@ a = Analysis(
         'PyQt6.QtTest',
         'PyQt6.QtCharts',
         'PyQt6.QtDataVisualization',
+        # Живут в отдельном исполняемом файле распознавания.
+        'faster_whisper',
+        'ctranslate2',
+        'onnxruntime',
+        'av',
+        'torch',
     ],
     noarchive=False,
 )

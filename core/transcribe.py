@@ -67,9 +67,13 @@ def _worker_command(audio_path: str, model_size: str, language: Optional[str]) -
         '--expected-mb', str(MODEL_SIZES_MB.get(model_size, 0)),
     ]
     if getattr(sys, 'frozen', False):
-        # В собранном виде отдельного интерпретатора нет: перезапускаем сам
-        # исполняемый файл, он распознаёт флаг до создания интерфейса.
-        return [sys.executable] + arguments
+        # Отдельный исполняемый файл со своим набором библиотек. Перезапускать
+        # само приложение нельзя: у него в одной папке лежат и Qt, и
+        # ctranslate2, Windows подтягивает их в оба процесса, и распознавание
+        # падает с нарушением доступа — изоляции процессом тут мало.
+        worker = os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
+                              'transcriber', 'sc-transcribe.exe')
+        return [worker] + arguments
     entry = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'main.py')
     return [sys.executable, entry] + arguments

@@ -51,14 +51,26 @@ jobs:
         run: python tools/make_icon.py
 
       - name: Build
-        run: pyinstaller --noconfirm --clean SilenceCutter.spec
+        run: |
+          # Speech recognition is a separate executable on purpose: Qt6 and
+          # ctranslate2 clash over native libraries, and sharing one _internal
+          # folder brings the crash back even across processes.
+          pyinstaller --noconfirm --clean transcriber.spec
+          pyinstaller --noconfirm --clean SilenceCutter.spec
+          robocopy dist\transcriber dist\SilenceCutter\transcriber /E /NFL /NDL /NJH /NJS /NC /NS
+          if ($LASTEXITCODE -ge 8) { throw 'failed to place the transcriber' }
+          $global:LASTEXITCODE = 0
 
-      - name: Verify the build starts and finds ffmpeg
+      - name: Verify the build starts and can transcribe
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          if (-not (Test-Path dist\SilenceCutter\_internal\ffmpeg.exe)) {
-            throw 'ffmpeg was not bundled into the build'
+          foreach ($f in '_internal\ffmpeg.exe', '_internal\resources\icons\dark\play.svg',
+                         'transcriber\sc-transcribe.exe') {
+            if (-not (Test-Path "dist\SilenceCutter\$f")) { throw "$f missing from the build" }
+          }
+          if (Test-Path dist\SilenceCutter\transcriber\_internal\PyQt6) {
+            throw 'Qt leaked into the transcriber - the crash it avoids would come back'
           }
           $proc = Start-Process dist\SilenceCutter\SilenceCutter.exe -PassThru
           Start-Sleep -Seconds 15
