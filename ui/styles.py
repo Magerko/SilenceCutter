@@ -251,6 +251,16 @@ QProgressBar#fileProgress::chunk {{
     background: {accent};
 }}
 
+/* Область прокрутки и вложенная страница рисуются обычным QWidget, а он берёт
+   фон из системной палитры: без этих правил на тёмной теме сквозь настройки
+   просвечивает белая подложка. */
+QScrollArea {{
+    background-color: {bg};
+    border: none;
+}}
+QScrollArea > QWidget > QWidget {{
+    background-color: {bg};
+}}
 QScrollBar:vertical {{
     background: transparent;
     width: 11px;

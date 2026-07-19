@@ -9,7 +9,8 @@ from PyQt6.QtWidgets import (
     QLabel, QListWidget, QListWidgetItem, QPushButton,
     QProgressBar, QLineEdit, QFileDialog, QFrame,
     QStatusBar, QMessageBox, QSizePolicy, QCheckBox,
-    QDoubleSpinBox, QMenu, QTabWidget, QComboBox, QPlainTextEdit
+    QDoubleSpinBox, QMenu, QTabWidget, QComboBox, QPlainTextEdit,
+    QScrollArea, QApplication
 )
 
 from core.ffmpeg_worker import FFmpegWorker
@@ -143,11 +144,24 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         self.setWindowTitle("SilenceCutter")
-        self.setMinimumSize(1200, 1000)
-        self.resize(1200, 1000)
+        # Минимум 1200x1000 не помещался на ноутбуках: рабочая область там
+        # около 1366x730, и нижняя часть окна уезжала за экран. Подгоняемся
+        # под доступное место, а содержимое кладём в прокрутку.
+        available = QApplication.primaryScreen().availableGeometry()
+        self.setMinimumSize(900, 560)
+        self.resize(min(1200, available.width() - 80),
+                    min(1000, available.height() - 80))
+        self.move(available.left() + (available.width() - self.width()) // 2,
+                  available.top() + (available.height() - self.height()) // 2)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setCentralWidget(scroll)
 
         central = QWidget()
-        self.setCentralWidget(central)
+        scroll.setWidget(central)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
