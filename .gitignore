@@ -37,3 +37,4 @@ vendor/
 
 # packaged release archives
 SilenceCutter-windows-*.zip
+installer_output/

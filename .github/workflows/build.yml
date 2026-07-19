@@ -77,10 +77,27 @@ jobs:
           Compress-Archive -Path dist\SilenceCutter\* -DestinationPath SilenceCutter-windows-x64.zip
           '{0:N1} MB' -f ((Get-Item SilenceCutter-windows-x64.zip).Length / 1MB)
 
+      - name: Build installer
+        run: |
+          $iscc = Get-ChildItem 'C:\Program Files (x86)\Inno Setup 6', 'C:\Program Files\Inno Setup 6' `
+            -Filter ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = Get-ChildItem 'C:\Program Files (x86)\Inno Setup 6', 'C:\Program Files\Inno Setup 6' `
+              -Filter ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $iscc) { throw 'Inno Setup compiler not found' }
+          # Tags look like v1.2.3; Inno wants a bare version number.
+          $version = if ($env:GITHUB_REF_NAME -match '^v(\d+\.\d+\.\d+)$') { $Matches[1] } else { '0.0.0' }
+          & $iscc.FullName "/DAppVersion=$version" installer.iss
+          Get-ChildItem installer_output
+
       - uses: actions/upload-artifact@v4
         with:
           name: SilenceCutter-windows-x64
-          path: SilenceCutter-windows-x64.zip
+          path: |
+            SilenceCutter-windows-x64.zip
+            installer_output/*.exe
           retention-days: 14
 
       - name: Publish release
@@ -88,6 +105,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$env:GITHUB_REF_NAME" SilenceCutter-windows-x64.zip `
+          gh release create "$env:GITHUB_REF_NAME" `
+            SilenceCutter-windows-x64.zip (Get-ChildItem installer_output\*.exe).FullName `
             --title "SilenceCutter $env:GITHUB_REF_NAME" `
             --generate-notes
