@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import List, Tuple
@@ -30,10 +31,13 @@ class FFmpegWorker(QThread):
         self.internal_silence_threshold: float = 2.0
         self.precise_cut: bool = True
         self._cancelled = False
+        # Пути результатов, занятые в текущем запуске.
+        self._used_outputs = set()
 
     def set_files(self, files: List[str], output_folder: str):
         self.files = files
         self.output_folder = output_folder
+        self._used_outputs = set()
 
     def set_options(
         self,
@@ -97,7 +101,15 @@ class FFmpegWorker(QThread):
         if silence_info is None:
             return False, "Could not analyze video"
 
-        output_path = get_output_filename(file_path, self.output_folder)
+        output_path = get_output_filename(file_path, self.output_folder, self._used_outputs)
+        self._used_outputs.add(output_path)
+        if Path(output_path).name != f'{Path(file_path).stem}_trimmed{Path(file_path).suffix}':
+            # Совпадение имён — не редкость: у записей с экрана и с телефона
+            # они часто одинаковые. Раз файл назван иначе, чем ожидается,
+            # об этом надо сказать, иначе человек будет искать его по
+            # привычному имени.
+            self.log_message.emit(
+                f'Имя занято, результат сохраняется как {Path(output_path).name}')
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
         if self.remove_internal_silence:
@@ -110,9 +122,7 @@ class FFmpegWorker(QThread):
             if len(segments) == 1:
                 start_time, end_time = segments[0]
                 if start_time < 0.1 and abs(end_time - silence_info.total_duration) < 0.1:
-                    self.progress_file.emit(100, filename)
-                    self.log_message.emit(f"Тишина не обнаружена в {filename}")
-                    return True, "Тишина не найдена (файл не изменён)"
+                    return self._report_no_silence(file_path, output_path, filename)
 
                 self.log_message.emit(f"Trimming edges: {start_time:.2f}s - {end_time:.2f}s")
                 self.progress_file.emit(30, filename)
@@ -128,9 +138,7 @@ class FFmpegWorker(QThread):
             self.log_message.emit(f"Обнаружена тишина: начало={start_time:.2f}s, конец={end_time:.2f}s, всего={silence_info.total_duration:.2f}s")
 
             if start_time < 0.1 and abs(end_time - silence_info.total_duration) < 0.1:
-                self.progress_file.emit(100, filename)
-                self.log_message.emit(f"Тишина не обнаружена в {filename}")
-                return True, "Тишина не найдена (файл не изменён)"
+                return self._report_no_silence(file_path, output_path, filename)
 
             self.log_message.emit(f"Обрезка: {start_time:.2f}s - {end_time:.2f}s")
             self.progress_file.emit(30, filename)
@@ -140,6 +148,55 @@ class FFmpegWorker(QThread):
             if success:
                 return True, f"Обрезано {saved:.1f}s тишины"
             return success, msg
+
+    def _suggest_threshold(self, file_path: str):
+        """Порог, при котором в этой записи тишина всё-таки нашлась бы.
+
+        Спрашиваем ровно тот же детектор, который потом и будет работать, —
+        перебираем пороги вверх от текущего, пока тишина не найдётся.
+
+        Считать по своей огибающей нельзя, хотя это было бы быстрее: она
+        снимается с моно 8 кГц и показывает систематически тише, чем
+        silencedetect. На проверяемой записи она обещала тишину уже при
+        -60 dB, тогда как на деле её нет и при -50. Совет, разошедшийся с
+        поведением программы, хуже отсутствия совета.
+        """
+        current = int(str(self.noise_threshold).replace('dB', '') or -50)
+        for threshold in range(current + 5, -14, 5):
+            if self._cancelled:
+                return None
+            info, error = detect_silence(file_path, f'{threshold}dB',
+                                         self.min_silence_duration)
+            if error or info is None:
+                return None
+            if info.all_silences:
+                return threshold
+        return None
+
+    def _deliver_unchanged(self, file_path: str, output_path: str, filename: str):
+        """Кладёт видео в папку результата, когда резать нечего.
+
+        Раньше в этом случае не появлялось ничего: приложение писало «файл не
+        изменён» и считало его обработанным, а человек открывал папку и не
+        находил там видео. Просили обработать несколько штук — значит в папке
+        должны лежать все, включая те, где резать было нечего.
+        """
+        try:
+            if os.path.abspath(file_path) != os.path.abspath(output_path):
+                shutil.copy2(file_path, output_path)
+        except Exception as exc:
+            return False, f'Не удалось сохранить копию: {exc}'
+        self.progress_file.emit(100, filename)
+        return True, 'Тишина не найдена, файл скопирован без изменений'
+
+    def _report_no_silence(self, file_path: str, output_path: str, filename: str):
+        self.log_message.emit(f'Тишина не обнаружена в {filename}')
+        suggestion = self._suggest_threshold(file_path)
+        if suggestion is not None:
+            self.log_message.emit(
+                f'Фон в этой записи громче текущего порога {self.noise_threshold}. '
+                f'Чтобы тишина нашлась, попробуйте порог около {suggestion} dB.')
+        return self._deliver_unchanged(file_path, output_path, filename)
 
     @staticmethod
     def _abort(process, output_path: str):

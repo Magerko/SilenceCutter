@@ -23,12 +23,33 @@ def get_video_files_from_folder(folder_path: str) -> list[str]:
     return sorted(files)
 
 
-def get_output_filename(input_path: str, output_folder: str) -> str:
+def get_output_filename(input_path: str, output_folder: str, reserved=None) -> str:
+    """Путь к результату для одного видео.
+
+    Имя строится из имени исходника, поэтому два файла с одинаковым именем
+    из разных папок дают один и тот же путь. Раньше второй молча затирал
+    первый: приложение отчитывалось об обработке двух видео, а в папке
+    лежало одно.
+
+    Через reserved передаётся набор путей, уже занятых в этом запуске. Имена
+    из прошлых запусков сознательно не учитываются: повторный прогон той же
+    подборки с другим порогом — обычное дело, и человек ждёт, что результат
+    обновится, а не размножится в «(2)», «(3)», «(4)».
+    """
     input_file = Path(input_path)
     name = input_file.stem
     ext = input_file.suffix
-    output_name = f"{name}_trimmed{ext}"
-    return str(Path(output_folder) / output_name)
+    folder = Path(output_folder)
+
+    candidate = folder / f"{name}_trimmed{ext}"
+    if reserved is None:
+        return str(candidate)
+
+    counter = 2
+    while str(candidate) in reserved:
+        candidate = folder / f"{name}_trimmed ({counter}){ext}"
+        counter += 1
+    return str(candidate)
 
 
 DURATION_PATTERN = re.compile(r'Duration:\s*(\d+):(\d+):(\d+\.?\d*)')
