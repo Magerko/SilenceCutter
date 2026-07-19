@@ -73,13 +73,15 @@ class DropZone(QFrame):
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        icon_label = QLabel("🎬")
-        icon_label.setStyleSheet("font-size: 56px; background: transparent;")
+        icon_label = QLabel()
+        icon_label.setPixmap(icon('scissors').pixmap(48, 48))
+        icon_label.setStyleSheet("background: transparent;")
         icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         text_label = QLabel("Перетащите видео или папки сюда")
         text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        text_label.setStyleSheet("font-size: 16px; font-weight: bold; background: transparent; color: #ff6b6b;")
+        # Коралловый здесь означал бы ошибку — это приглашение, а не отказ.
+        text_label.setStyleSheet("font-size: 16px; font-weight: 600; background: transparent;")
 
         subtext_label = QLabel("или нажмите для выбора файлов")
         subtext_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -150,11 +152,9 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
 
-        title_label = QLabel("✂️ SilenceCutter")
-        title_label.setObjectName("titleLabel")
-        title_label.setStyleSheet("background: transparent;")
-        layout.addWidget(title_label)
-
+        # Название приложения внутри окна не пишем: система уже показывает его
+        # в заголовке, а вторая такая же надпись только отнимала высоту у
+        # списка файлов и ничего не сообщала.
         self.drop_zone = DropZone(self)
         self.drop_zone.setMinimumHeight(140)
         layout.addWidget(self.drop_zone)
