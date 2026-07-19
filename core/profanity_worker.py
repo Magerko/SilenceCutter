@@ -50,8 +50,10 @@ class ProfanityWorker(QThread):
     file_completed = pyqtSignal(str, bool, str)
     all_completed = pyqtSignal(int, int)
     log_message = pyqtSignal(str)
-    # Сообщает, что именно заглушено: список (начало, конец, слово)
-    report = pyqtSignal(str, list)
+    # Что именно заглушено: имя файла, его длительность и список
+    # (начало, конец, слово). Длительность нужна, чтобы показать метки на
+    # дорожке — без неё положение отрезков не с чем соотнести.
+    report = pyqtSignal(str, float, list)
     model_progress = pyqtSignal(int, float, float)
     model_download_started = pyqtSignal(str, float)
 
@@ -154,11 +156,12 @@ class ProfanityWorker(QThread):
             self.progress.emit(10, f'Извлечение звука из {name}...')
             matches = self._collect_matches(file_path, temp_dir)
 
+            duration = get_video_duration_safe(file_path)
+
             if not matches:
-                self.report.emit(name, [])
+                self.report.emit(name, duration, [])
                 return True, 'Мат не найден, файл не изменён'
 
-            duration = get_video_duration_safe(file_path)
             intervals = merge_intervals(
                 [(m.start, m.end) for m in matches], PAD_BEFORE, PAD_AFTER, duration)
 
@@ -186,7 +189,8 @@ class ProfanityWorker(QThread):
                 return False, f'FFMPEG error: {(result.stderr or "")[-300:]}'
 
             self.progress.emit(100, 'Готово')
-            self.report.emit(name, [(m.start, m.end, m.word) for m in matches])
+            self.report.emit(name, duration,
+                             [(m.start, m.end, m.word) for m in matches])
             return True, f'Заглушено слов: {len(matches)}'
 
 

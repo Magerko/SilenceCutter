@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QIcon
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -14,7 +14,9 @@ from PyQt6.QtWidgets import (
 
 from core.ffmpeg_worker import FFmpegWorker
 from core.profanity_worker import ProfanityWorker
+from core.loudness import WINDOW_SECONDS, compute_envelope, segments_below
 from core import transcribe
+from ui.track import LoudnessTrack, MarkersTrack, BUSY, EMPTY, ERROR, READY
 from utils.paths import resource_path
 
 
@@ -22,6 +24,31 @@ from utils.paths import resource_path
 # Наборы различаются только цветом контура: один общий серый давал на светлом
 # фоне 3,4:1, тогда как раздельные значения дают 8–10:1 в обеих темах.
 ICON_THEME = 'dark'
+
+
+class EnvelopeWorker(QThread):
+    """Замер громкости файла. В основном потоке подвесил бы окно на пару секунд."""
+    ready = pyqtSignal(list, float)
+    failed = pyqtSignal(str)
+
+    def __init__(self, path: str, parent=None):
+        super().__init__(parent)
+        self.path = path
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            levels, duration = compute_envelope(
+                self.path, cancel_check=lambda: self._cancelled)
+            if not self._cancelled:
+                self.ready.emit(levels, duration)
+        except InterruptedError:
+            pass
+        except Exception as error:
+            self.failed.emit(str(error))
 
 
 def icon(name: str) -> QIcon:
@@ -105,6 +132,7 @@ class MainWindow(QMainWindow):
         self.output_folder: str = str(Path.home() / "Videos" / "Trimmed")
         self.worker: Optional[FFmpegWorker] = None
         self.merge_worker = None
+        self.envelope_worker: Optional[EnvelopeWorker] = None
 
         self.init_ui()
         self.check_ffmpeg()
@@ -198,6 +226,11 @@ class MainWindow(QMainWindow):
         self.tabs.currentChanged.connect(self.on_tab_changed)
         layout.addWidget(self.tabs)
 
+        # Дорожка должна отвечать на настройки сразу, а не после запуска.
+        self.noise_spin.valueChanged.connect(self.on_threshold_spin_changed)
+        self.min_duration_spin.valueChanged.connect(self.refresh_track_segments)
+        self.file_list.currentRowChanged.connect(self.on_file_selected)
+
         self._build_progress_and_actions(layout)
 
         self.status_bar = QStatusBar()
@@ -207,6 +240,20 @@ class MainWindow(QMainWindow):
     def _build_silence_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
+
+        # Дорожка стоит выше настроек: она объясняет, что делает порог, и
+        # смотреть на неё нужно раньше, чем крутить ползунок.
+        self.track = LoudnessTrack()
+        self.track.set_state(EMPTY, 'Выберите файл в списке, чтобы увидеть громкость')
+        self.track.threshold_changed.connect(self.on_track_threshold)
+        layout.addWidget(self.track)
+
+        self.track_summary = QLabel(
+            'Бирюзовым — что останется, коралловым — что вырежется. '
+            'Порог можно тянуть прямо по дорожке.')
+        self.track_summary.setWordWrap(True)
+        self.track_summary.setStyleSheet('background: transparent; color: #868c96;')
+        layout.addWidget(self.track_summary)
 
         settings_layout = QHBoxLayout()
         settings_layout.setSpacing(12)
@@ -334,6 +381,13 @@ class MainWindow(QMainWindow):
         self.model_progress.setVisible(False)
         layout.addWidget(self.model_progress)
 
+        # Дорожка показывает, где по ролику разбросаны заглушения, — по списку
+        # времён это не читается. Подтверждения перед обработкой нет, поэтому
+        # увидеть картину целиком человеку нужно тем более.
+        self.report_track = MarkersTrack()
+        self.report_track.set_state(EMPTY, 'Здесь будут отмечены заглушённые места')
+        layout.addWidget(self.report_track)
+
         self.profanity_report = QPlainTextEdit()
         self.profanity_report.setReadOnly(True)
         self.profanity_report.setPlaceholderText(
@@ -440,6 +494,77 @@ class MainWindow(QMainWindow):
                     f"Строка {line_number}: конец участка не позже начала")
             ranges.append((start, end))
         return ranges
+
+    # --- дорожка громкости ------------------------------------------------
+    def on_file_selected(self, row: int):
+        if 0 <= row < len(self.files):
+            self.show_track_for(self.files[row])
+        else:
+            self.track.set_state(EMPTY, 'Выберите файл в списке, чтобы увидеть громкость')
+
+    def show_track_for(self, path: str):
+        """Замерить громкость выбранного файла и показать её на дорожке."""
+        if getattr(self, 'envelope_worker', None) is not None:
+            self.envelope_worker.cancel()
+            self.envelope_worker.wait(3000)
+
+        self.track.set_state(BUSY, 'Анализ громкости...')
+        self.track.set_progress(0)
+        self.track_summary.setText(f'Анализ: {Path(path).name}')
+
+        self.envelope_worker = EnvelopeWorker(path, self)
+        self.envelope_worker.ready.connect(self.on_envelope_ready)
+        self.envelope_worker.failed.connect(self.on_envelope_failed)
+        self.envelope_worker.start()
+
+    def on_envelope_ready(self, levels: list, duration: float):
+        if not levels:
+            self.on_envelope_failed('В файле нет звуковой дорожки')
+            return
+        self.track.set_envelope(levels, duration, WINDOW_SECONDS)
+        self.track.set_threshold(self.noise_spin.value())
+        self.track.set_state(READY)
+        self.refresh_track_segments()
+
+    def on_envelope_failed(self, message: str):
+        self.track.set_state(ERROR, message)
+        self.track_summary.setText(message)
+
+    def on_track_threshold(self, db: float):
+        """Порог потянули по дорожке — ползунок должен показать то же значение."""
+        self.noise_spin.blockSignals(True)
+        self.noise_spin.setValue(round(db))
+        self.noise_spin.blockSignals(False)
+        self.refresh_track_segments()
+
+    def on_threshold_spin_changed(self):
+        self.track.set_threshold(self.noise_spin.value())
+        self.refresh_track_segments()
+
+    def refresh_track_segments(self):
+        """Пересчитать, что уйдёт под нож, и подписать это словами."""
+        if self.track.state != READY or not self.track.levels:
+            return
+        cut = segments_below(self.track.levels, self.noise_spin.value(),
+                             WINDOW_SECONDS, self.min_duration_spin.value())
+        self.track.set_segments(cut)
+
+        total = self.track.duration
+        removed = sum(end - start for start, end in cut)
+        kept = max(0.0, total - removed)
+
+        def as_time(seconds: float) -> str:
+            return f'{int(seconds) // 60}:{int(seconds) % 60:02d}'
+
+        if removed >= total - 0.5:
+            # Порог выше уровня речи: под нож уходит вся запись.
+            self.track_summary.setText(
+                f'При этом пороге вырежется всё — {as_time(total)} из {as_time(total)}. '
+                'Порог выше уровня речи, его нужно понизить.')
+            return
+        self.track_summary.setText(
+            f'Останется {as_time(kept)} из {as_time(total)}, '
+            f'вырежется {as_time(removed)} — участков: {len(cut)}')
 
     def check_ffmpeg(self):
         available, message = check_ffmpeg_available()
@@ -690,11 +815,17 @@ class MainWindow(QMainWindow):
             self.model_progress.setVisible(False)
             self._refresh_model_status()
 
-    def on_profanity_report(self, filename: str, muted: list):
+    def on_profanity_report(self, filename: str, duration: float, muted: list):
+        self.report_track.set_duration(duration)
+        self.report_track.set_segments([(start, end) for start, end, _ in muted])
+        self.report_track.set_state(READY)
+
         if not muted:
+            self.report_track.set_state(EMPTY, f'{filename}: мат не найден')
             self.profanity_report.appendPlainText(
                 f"{filename}: мат не найден, файл не изменён.")
             return
+
         self.profanity_report.appendPlainText(f"{filename}: заглушено {len(muted)}")
         for start, end, word in muted:
             minutes, seconds = divmod(int(start), 60)
@@ -823,7 +954,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         # A QThread still running when its owner is destroyed takes the whole
         # process down, which in a windowed build looks like a silent crash.
-        for worker in (self.worker, self.merge_worker):
+        for worker in (self.worker, self.merge_worker, self.envelope_worker):
             if worker is None or not worker.isRunning():
                 continue
             worker.cancel()
