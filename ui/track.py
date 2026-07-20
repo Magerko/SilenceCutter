@@ -284,11 +284,27 @@ class LoudnessTrack(TrackWidget):
         if not self.levels:
             return
 
+        # Берём только ту часть записи, которая видна сейчас. Раньше здесь
+        # перебирался весь массив на всю ширину, поэтому масштаб менял линейку,
+        # а сама огибающая оставалась прежней.
+        span = self.visible_span()
+        if span <= 0 or self.window <= 0:
+            return
+        first = max(0, int(self.view_start / self.window))
+        last = min(len(self.levels), int((self.view_start + span) / self.window) + 1)
+        visible = self.levels[first:last]
+        if not visible:
+            return
+
         # Столбик на пиксель: точек обычно больше, чем ширина виджета.
         columns = max(1, int(body.width()))
-        per_column = max(1, len(self.levels) // columns)
+        per_column = len(visible) / columns
         for column in range(columns):
-            chunk = self.levels[column * per_column:(column + 1) * per_column]
+            # При сильном приближении на столбик приходится меньше одной точки,
+            # поэтому границы считаем дробными и берём хотя бы один отсчёт.
+            begin = int(column * per_column)
+            end = max(begin + 1, int((column + 1) * per_column))
+            chunk = visible[begin:end]
             if not chunk:
                 break
             peak = max(chunk)
