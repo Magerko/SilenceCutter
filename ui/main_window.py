@@ -182,8 +182,11 @@ class MainWindow(QMainWindow):
         # под доступное место, а содержимое кладём в прокрутку.
         available = QApplication.primaryScreen().availableGeometry()
         self.setMinimumSize(900, 560)
-        self.resize(min(1200, available.width() - 80),
-                    min(1000, available.height() - 80))
+        # Занимаем большую часть экрана. Жёсткий потолок в 1000 px оставлял на
+        # мониторе 2560x1440 половину высоты пустой, и окно приходилось тянуть
+        # руками каждый запуск.
+        self.resize(min(1400, int(available.width() * 0.70)),
+                    max(560, int(available.height() * 0.88)))
         self.move(available.left() + (available.width() - self.width()) // 2,
                   available.top() + (available.height() - self.height()) // 2)
 
@@ -267,8 +270,8 @@ class MainWindow(QMainWindow):
         # Список файлов и папка назначения общие для обеих задач, а настройки
         # у каждой свои — поэтому вкладки начинаются здесь.
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_silence_tab(), "Тишина")
-        self.tabs.addTab(self._build_profanity_tab(), "Мат")
+        self.tabs.addTab(self._build_silence_tab(), "Вырезать тишину")
+        self.tabs.addTab(self._build_profanity_tab(), "Удалить мат")
         self.tabs.currentChanged.connect(self.on_tab_changed)
         layout.addWidget(self.tabs)
 
@@ -490,6 +493,8 @@ class MainWindow(QMainWindow):
         self.process_btn.setObjectName("primaryButton")
         self.process_btn.clicked.connect(self.start_processing)
         self.process_btn.setEnabled(False)
+        self.process_btn.setToolTip(
+            "Выполняет действие открытой вкладки: вырезать тишину или удалить мат.")
         action_layout.addWidget(self.process_btn)
 
         layout.addLayout(action_layout)
