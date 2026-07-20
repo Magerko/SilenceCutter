@@ -18,6 +18,12 @@ class SilenceInfo:
 # секунды означала бы перекодирование впустую.
 EDGE_MIN_DURATION = 0.2
 
+# Мёртвый воздух в начале и конце записи почти всегда разорван щелчком мыши,
+# вдохом или стуком клавиши. Для ffmpeg это звук, и тишина распадается на два
+# блока: первый оказывается короче порога, и не срезается ничего. Островки
+# звука короче этой длительности при поиске краёв пропускаем.
+EDGE_MERGE_GAP = 0.35
+
 
 def detect_silence(
     file_path: str,
@@ -29,7 +35,11 @@ def detect_silence(
     # паузам внутри записи. Если передать его прямо сюда, полсекунды тишины в
     # конце при пороге в секунду не будут найдены вовсе — а хвост обрезать надо
     # всегда, в отличие от паузы посреди речи, которая может быть осмысленной.
-    scan_window = min(min_duration, EDGE_MIN_DURATION)
+    # Ищем мелким шагом, независимо от порога человека: у краёв тишина часто
+    # разорвана щелчком на куски по одной-две десятых секунды, и при крупном
+    # окне ffmpeg о них просто не сообщает. Отбор по длительности делаем сами,
+    # уже после склейки.
+    scan_window = 0.05
     cmd = [
         ffmpeg_path(),
         '-i', file_path,
@@ -90,18 +100,24 @@ def detect_silence(
             else:
                 all_silences.append((start, total_duration))
 
+        # Склеиваем соседние блоки тишины, разделённые коротким звуком.
+        merged = []
+        for begin, finish in all_silences:
+            if merged and begin - merged[-1][1] <= EDGE_MERGE_GAP:
+                merged[-1] = (merged[-1][0], finish)
+            else:
+                merged.append((begin, finish))
+
         start_silence_end = None
-        if silence_starts and silence_ends:
-            if silence_starts[0] < 0.1:
-                start_silence_end = silence_ends[0]
+        if merged and merged[0][0] < 0.15:
+            start_silence_end = merged[0][1]
 
         end_silence_start = None
-        if silence_starts:
-            last_start = silence_starts[-1]
-            if len(silence_ends) < len(silence_starts):
-                end_silence_start = last_start
-            elif silence_ends and abs(silence_ends[-1] - total_duration) < 0.5:
-                end_silence_start = silence_starts[-1]
+        if merged:
+            last_begin, last_finish = merged[-1]
+            # Тишина считается концевой, если она упирается в конец записи.
+            if total_duration - last_finish < 0.35:
+                end_silence_start = last_begin
 
         # Внутренние паузы отдаём уже отфильтрованными по порогу человека:
         # иначе короткое окно поиска резало бы речь на куски.
