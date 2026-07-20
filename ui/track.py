@@ -25,6 +25,8 @@ PADDING = 8
 class TrackWidget(QWidget):
     """Основа: линейка времени, тело, указатель, четыре состояния."""
 
+    view_changed = pyqtSignal(float, float)
+
     position_clicked = pyqtSignal(float)
 
     def __init__(self, parent=None):
@@ -37,6 +39,11 @@ class TrackWidget(QWidget):
         self.message = 'Файл не выбран'
         self.progress = 0
         self.duration = 0.0
+        # Окно просмотра: с какой секунды и сколько секунд показываем. На
+        # длинной записи целиком не разглядеть отдельные паузы, поэтому
+        # дорожку можно приблизить и прокрутить.
+        self.view_start = 0.0
+        self.view_span = 0.0
         self.segments: List[Tuple[float, float]] = []
         self.cursor: Optional[float] = None
 
@@ -65,6 +72,8 @@ class TrackWidget(QWidget):
 
     def set_duration(self, seconds: float):
         self.duration = max(0.0, seconds)
+        self.view_start = 0.0
+        self.view_span = self.duration
         self.update()
 
     def set_segments(self, segments: List[Tuple[float, float]]):
@@ -81,18 +90,61 @@ class TrackWidget(QWidget):
                       max(1, self.width() - PADDING * 2),
                       max(1, self.height() - RULER_HEIGHT - PADDING * 2))
 
+    def visible_span(self) -> float:
+        """Сколько секунд помещается в окне сейчас."""
+        if self.view_span > 0:
+            return min(self.view_span, self.duration or self.view_span)
+        return self.duration
+
     def x_for_time(self, seconds: float) -> float:
         body = self.body_rect()
-        if self.duration <= 0:
+        span = self.visible_span()
+        if span <= 0:
             return body.left()
-        return body.left() + body.width() * (seconds / self.duration)
+        return body.left() + body.width() * ((seconds - self.view_start) / span)
 
     def time_for_x(self, x: float) -> float:
         body = self.body_rect()
-        if body.width() <= 0 or self.duration <= 0:
+        span = self.visible_span()
+        if body.width() <= 0 or span <= 0:
             return 0.0
         ratio = (x - body.left()) / body.width()
-        return max(0.0, min(self.duration, ratio * self.duration))
+        return max(0.0, min(self.duration, self.view_start + ratio * span))
+
+    def set_view(self, start: float, span: float):
+        """Показать участок записи. Значения подгоняются под её границы."""
+        if self.duration <= 0:
+            return
+        span = max(0.5, min(span or self.duration, self.duration))
+        start = max(0.0, min(start, self.duration - span))
+        if abs(start - self.view_start) < 1e-6 and abs(span - self.view_span) < 1e-6:
+            return
+        self.view_start = start
+        self.view_span = span
+        self.update()
+
+    def zoom_at(self, seconds: float, factor: float):
+        """Приблизить или отдалить, удерживая указанный момент на месте."""
+        if self.duration <= 0:
+            return
+        span = self.visible_span()
+        new_span = max(0.5, min(span / factor, self.duration))
+        # Точка под курсором должна остаться там же, иначе при колесе картинка
+        # уезжает и попасть в нужное место становится невозможно.
+        ratio = 0.5 if span <= 0 else (seconds - self.view_start) / span
+        self.set_view(seconds - ratio * new_span, new_span)
+
+    def wheelEvent(self, event):
+        if self.duration <= 0:
+            super().wheelEvent(event)
+            return
+        steps = event.angleDelta().y() / 120.0
+        if not steps:
+            super().wheelEvent(event)
+            return
+        self.zoom_at(self.time_for_x(event.position().x()), 1.25 ** steps)
+        self.view_changed.emit(self.view_start, self.visible_span())
+        event.accept()
 
     # --- отрисовка ------------------------------------------------------
     def paintEvent(self, event):
@@ -152,7 +204,7 @@ class TrackWidget(QWidget):
         font.setPointSize(8)
         painter.setFont(font)
         for index in range(5):
-            seconds = self.duration * index / 4
+            seconds = self.view_start + self.visible_span() * index / 4
             x = self.x_for_time(seconds)
             label = f'{int(seconds) // 60}:{int(seconds) % 60:02d}'
             width = 46

@@ -20,6 +20,7 @@ from core.loudness import WINDOW_SECONDS, compute_envelope, segments_below
 from core import transcribe
 from ui.track import LoudnessTrack, MarkersTrack, RangesTrack, BUSY, EMPTY, ERROR, READY
 from ui.model_download import ModelDownloadPanel
+from ui.timeline_bar import TimelineBar
 from utils.paths import resource_path
 from utils import links
 
@@ -296,6 +297,18 @@ class MainWindow(QMainWindow):
         self.track.set_state(EMPTY, 'Выберите файл в списке, чтобы увидеть громкость')
         self.track.threshold_changed.connect(self.on_track_threshold)
         layout.addWidget(self.track)
+
+        # Полоса обзора: тянуть за середину — прокрутка, за края — масштаб.
+        # На получасовой записи дорожка целиком превращается в сплошную
+        # заливку, и отдельные паузы в ней не различить.
+        self.timeline_bar = TimelineBar()
+        self.timeline_bar.setToolTip(
+            'Показывает, какая часть записи видна. Тяните за середину, чтобы '
+            'прокрутить, за края — чтобы приблизить. Колесо мыши тоже меняет '
+            'масштаб.')
+        self.timeline_bar.view_changed.connect(self.on_timeline_view)
+        self.track.view_changed.connect(self.on_track_view)
+        layout.addWidget(self.timeline_bar)
 
         self.track_summary = QLabel(
             'Бирюзовым — что останется, коралловым — что вырежется. '
@@ -583,6 +596,7 @@ class MainWindow(QMainWindow):
             self.on_envelope_failed('В файле нет звуковой дорожки')
             return
         self.track.set_envelope(levels, duration, WINDOW_SECONDS)
+        self.timeline_bar.set_duration(duration)
         self.track.set_threshold(self.noise_spin.value())
         self.track.set_state(READY)
         self.refresh_track_segments()
@@ -594,6 +608,14 @@ class MainWindow(QMainWindow):
     def on_envelope_failed(self, message: str):
         self.track.set_state(ERROR, message)
         self.track_summary.setText(message)
+
+    def on_timeline_view(self, start: float, span: float):
+        """Полосу подвинули — дорожка показывает тот же участок."""
+        self.track.set_view(start, span)
+
+    def on_track_view(self, start: float, span: float):
+        """Масштаб поменяли колесом на самой дорожке — двигаем полосу."""
+        self.timeline_bar.set_view(start, span)
 
     def on_track_threshold(self, db: float):
         """Порог потянули по дорожке — ползунок должен показать то же значение."""
