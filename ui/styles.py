@@ -178,7 +178,21 @@ QDoubleSpinBox::up-button, QSpinBox::up-button,
 QDoubleSpinBox::down-button, QSpinBox::down-button {{
     background: {raised};
     border: none;
-    width: 16px;
+    width: 18px;
+    border-radius: 3px;
+    margin: 1px;
+}}
+/* Без изображения кнопки счётчика оставались пустыми: стрелки рисует системный
+   стиль, и на тёмной теме они получались чёрными по чёрному. */
+QDoubleSpinBox::up-arrow, QSpinBox::up-arrow {{
+    image: url({arrow_up});
+    width: 10px;
+    height: 10px;
+}}
+QDoubleSpinBox::down-arrow, QSpinBox::down-arrow {{
+    image: url({arrow_down});
+    width: 10px;
+    height: 10px;
 }}
 QDoubleSpinBox::up-button:hover, QSpinBox::up-button:hover,
 QDoubleSpinBox::down-button:hover, QSpinBox::down-button:hover {{
@@ -330,8 +344,19 @@ QToolTip {{
 """
 
 
+def _arrow(name: str) -> str:
+    """Путь к стрелке для QSS: только прямые слэши, иначе правило не применится."""
+    from utils.paths import resource_path
+    import os
+    path = resource_path(os.path.join('resources', 'icons', 'dark', name + '.svg'))
+    return path.replace(os.sep, '/')
+
+
 def get_style(dark_mode: bool = True) -> str:
-    return _TEMPLATE.format(**(DARK if dark_mode else LIGHT))
+    palette = dict(DARK if dark_mode else LIGHT)
+    palette['arrow_up'] = _arrow('up')
+    palette['arrow_down'] = _arrow('down')
+    return _TEMPLATE.format(**palette)
 
 
 # Прежний интерфейс модуля сохранён: на него ссылается остальной код.

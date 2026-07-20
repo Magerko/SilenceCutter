@@ -316,7 +316,7 @@ class MainWindow(QMainWindow):
         self.noise_spin.setValue(-50)
         self.noise_spin.setSuffix(" dB")
         self.noise_spin.setSingleStep(5)
-        self.noise_spin.setFixedWidth(90)
+        self.noise_spin.setMinimumWidth(130)
         self.noise_spin.setToolTip("Порог громкости для определения тишины\n-50 dB — только полная тишина (безопасно)\n-30 dB — агрессивнее, режет больше")
         settings_layout.addWidget(self.noise_spin)
 
@@ -329,7 +329,7 @@ class MainWindow(QMainWindow):
         self.min_duration_spin.setValue(1.0)
         self.min_duration_spin.setSuffix(" сек")
         self.min_duration_spin.setSingleStep(0.1)
-        self.min_duration_spin.setFixedWidth(90)
+        self.min_duration_spin.setMinimumWidth(130)
         self.min_duration_spin.setToolTip("Минимальная длительность тишины для обнаружения\nКороткие паузы < этого значения игнорируются")
         settings_layout.addWidget(self.min_duration_spin)
 
@@ -339,12 +339,14 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(self.remove_internal_cb)
 
         self.threshold_spin = QDoubleSpinBox()
-        self.threshold_spin.setRange(0.5, 30.0)
+        # Нижняя граница 0,2 с: короткие паузы между словами тоже бывает
+        # нужно убирать, а прежние 0,5 этого не позволяли.
+        self.threshold_spin.setRange(0.2, 30.0)
         self.threshold_spin.setValue(2.0)
         self.threshold_spin.setSuffix(" сек")
-        self.threshold_spin.setSingleStep(0.5)
+        self.threshold_spin.setSingleStep(0.1)
         self.threshold_spin.setEnabled(False)
-        self.threshold_spin.setFixedWidth(80)
+        self.threshold_spin.setMinimumWidth(120)
         self.threshold_spin.setToolTip("Паузы короче этого значения не вырезаются")
         settings_layout.addWidget(self.threshold_spin)
 
