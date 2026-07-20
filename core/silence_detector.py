@@ -14,16 +14,26 @@ class SilenceInfo:
     all_silences: List[Tuple[float, float]]
 
 
+# Ниже этой длины тишина по краям не считается: обрезка ради сотых долей
+# секунды означала бы перекодирование впустую.
+EDGE_MIN_DURATION = 0.2
+
+
 def detect_silence(
     file_path: str,
     noise_threshold: str = "-30dB",
     min_duration: float = 0.5,
     progress_callback=None
 ) -> Tuple[Optional[SilenceInfo], Optional[str]]:
+    # Ищем тишину коротким окном, а порог пользователя применяем потом, к
+    # паузам внутри записи. Если передать его прямо сюда, полсекунды тишины в
+    # конце при пороге в секунду не будут найдены вовсе — а хвост обрезать надо
+    # всегда, в отличие от паузы посреди речи, которая может быть осмысленной.
+    scan_window = min(min_duration, EDGE_MIN_DURATION)
     cmd = [
         ffmpeg_path(),
         '-i', file_path,
-        '-af', f'silencedetect=noise={noise_threshold}:d={min_duration}',
+        '-af', f'silencedetect=noise={noise_threshold}:d={scan_window}',
         '-f', 'null',
         '-'
     ]
@@ -93,11 +103,23 @@ def detect_silence(
             elif silence_ends and abs(silence_ends[-1] - total_duration) < 0.5:
                 end_silence_start = silence_starts[-1]
 
+        # Внутренние паузы отдаём уже отфильтрованными по порогу человека:
+        # иначе короткое окно поиска резало бы речь на куски.
+        internal = [(a, b) for a, b in all_silences if b - a >= min_duration]
+
+        # Слишком короткий хвост не трогаем: разница в сотые доли секунды
+        # означала бы перекодирование ради ничего.
+        if start_silence_end is not None and start_silence_end < EDGE_MIN_DURATION:
+            start_silence_end = None
+        if (end_silence_start is not None
+                and total_duration - end_silence_start < EDGE_MIN_DURATION):
+            end_silence_start = None
+
         return SilenceInfo(
             start_silence_end=start_silence_end,
             end_silence_start=end_silence_start,
             total_duration=total_duration,
-            all_silences=all_silences
+            all_silences=internal
         ), None
 
     except FileNotFoundError:
